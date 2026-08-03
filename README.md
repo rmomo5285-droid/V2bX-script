@@ -1,31 +1,36 @@
-# V2bX
-A V2board node server based on Xray-Core.
+# V2bX hardened deployment
 
-一个基于Xray的V2board节点服务端，支持V2ay,Trojan,Shadowsocks协议
+本仓库是 `rmomo5285-droid/V2bX` 安全加固核心的配套部署与运维脚本。当前
+`feat/hardened-v2bx-deployment` 为发布候选分支，尚未创建正式 Release，也不应
+直接用于生产节点。
 
-Find the source code here: [InazumaV/V2bX](https://github.com/InazumaV/V2bX)
+支持矩阵：
 
-如对脚本不放心，可使用此沙箱先测一遍再使用：https://killercoda.com/playgrounds/scenario/ubuntu
+| Core | Protocols |
+| --- | --- |
+| Xray | Shadowsocks, VLESS, VMess, Trojan |
+| sing-box | Shadowsocks, VLESS, VMess, Hysteria 1/2, Trojan, TUIC, AnyTLS |
+| native Hysteria2 | Hysteria2 |
 
-# 详细使用教程
+主要交付内容包括：事务式迁移和自动回滚、组件与核心 Release 的 SHA-256 校验、
+保守路由模板、旧原生 Hy2 中国 ACL 的精确识别与移除、独立可回滚的网络调优和
+低内存保护，以及有界日志轮转和按用户审计查询。
 
-[教程](https://v2bx.v-50.me/)
+正式操作前先阅读 [运维手册](docs/OPERATIONS.md)。本分支不提供一键生产 URL；
+必须先完成 Release 资产、摘要、归档内容和灰度门禁验收。
 
-# 一键安装
-
-```
-wget -N https://raw.githubusercontent.com/wyx2685/V2bX-script/master/install.sh && bash install.sh
-```
-
-## 已安装节点的一键 Hy2 修复
-
-旧版安装脚本生成的 `/etc/V2bX/hy2config.yaml` 会先拒绝中国域名和 IP，港澳台节点因此也无法回连 B 站。`repair-hy2-cn-route.sh` 只在这两条拒绝规则前加入 B 站域名例外，原有中国目标拦截继续生效，QQ、百度等其他站点不会被放行。脚本不改 Xray、sing-box、管理脚本或 XBoard 面板规则；默认只检查，不写文件：
+## 开发验证
 
 ```bash
-wget -O /root/repair-hy2-cn-route.sh https://raw.githubusercontent.com/rmomo5285-droid/V2bX-script/fix/known-issues/repair-hy2-cn-route.sh
-chmod 700 /root/repair-hy2-cn-route.sh
-/root/repair-hy2-cn-route.sh --check
-/root/repair-hy2-cn-route.sh --apply
+find . -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+for test_file in tests/test-*.sh; do bash "$test_file"; done
+bash scripts/components-manifest.sh check
+git diff --check
 ```
 
-`--apply` 会加锁、保留元数据备份并原子替换配置；仅在 V2bX 原本运行时重启，重启或健康检查失败会自动回滚。若两条中国拒绝规则已经不存在，脚本不会重新添加。以后重新生成 Hy2 配置后可再运行一次；Xray/sing-box 的规则是单独审计项，不由这个最小修复脚本处理。
+组件发生变化后由维护者更新清单：
+
+```bash
+bash scripts/components-manifest.sh write
+bash scripts/components-manifest.sh check
+```

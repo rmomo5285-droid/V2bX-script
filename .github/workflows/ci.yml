@@ -2,7 +2,6 @@ name: Script validation
 
 on:
   push:
-    branches: [master]
   pull_request:
   workflow_dispatch:
 
@@ -12,6 +11,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Validate shell syntax
@@ -23,3 +23,5 @@ jobs:
             echo "Running $test_file"
             bash "$test_file"
           done
+      - name: Verify component manifest
+        run: bash scripts/components-manifest.sh check
