@@ -1,20 +1,23 @@
 [Unit]
 Description=V2bX Service
-After=network.target nss-lookup.target
-Wants=network.target
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 User=root
 Group=root
 Type=simple
-LimitAS=infinity
-LimitRSS=infinity
-LimitCORE=infinity
-LimitNOFILE=999999
+LimitCORE=0
+LimitNOFILE=1048576
 WorkingDirectory=/usr/local/V2bX/
 ExecStart=/usr/local/V2bX/V2bX server
-Restart=always
-RestartSec=10
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
 
 [Install]
 WantedBy=multi-user.target

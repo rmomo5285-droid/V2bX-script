@@ -5,6 +5,10 @@ green='\033[0;32m'
 yellow='\033[0;33m'
 plain='\033[0m'
 
+script_repo="rmomo5285-droid/V2bX-script"
+script_branch="master"
+script_base_url="https://raw.githubusercontent.com/${script_repo}/${script_branch}"
+
 # check root
 [[ $EUID -ne 0 ]] && echo -e "${red}错误: ${plain} 必须使用root用户运行此脚本！\n" && exit 1
 
@@ -96,8 +100,18 @@ before_show_menu() {
 }
 
 install() {
-    bash <(curl -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/install.sh)
-    if [[ $? == 0 ]]; then
+    local installer
+    installer=$(mktemp)
+    if ! curl --proto '=https' --tlsv1.2 -fLsS --retry 3 -o "$installer" "$script_base_url/install.sh" ||
+       ! bash -n "$installer"; then
+        rm -f -- "$installer"
+        echo -e "${red}下载安装脚本失败或脚本语法无效${plain}"
+        return 1
+    fi
+    bash "$installer"
+    local result=$?
+    rm -f -- "$installer"
+    if [[ $result == 0 ]]; then
         if [[ $# == 0 ]]; then
             start
         else
@@ -112,8 +126,22 @@ update() {
     else
         version=$2
     fi
-    bash <(curl -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/install.sh) $version
-    if [[ $? == 0 ]]; then
+    local installer
+    installer=$(mktemp)
+    if ! curl --proto '=https' --tlsv1.2 -fLsS --retry 3 -o "$installer" "$script_base_url/install.sh" ||
+       ! bash -n "$installer"; then
+        rm -f -- "$installer"
+        echo -e "${red}下载安装脚本失败或脚本语法无效${plain}"
+        return 1
+    fi
+    if [[ -n "$version" ]]; then
+        bash "$installer" "$version"
+    else
+        bash "$installer"
+    fi
+    local result=$?
+    rm -f -- "$installer"
+    if [[ $result == 0 ]]; then
         echo -e "${green}更新完成，已自动重启 V2bX，请使用 V2bX log 查看运行日志${plain}"
         exit
     fi
@@ -124,26 +152,57 @@ update() {
 }
 
 config() {
-    echo "V2bX在修改配置后会自动尝试重启"
-    vi /etc/V2bX/config.json
-    sleep 2
-    restart
-    check_status
-    case $? in
-        0)
-            echo -e "V2bX状态: ${green}已运行${plain}"
-            ;;
-        1)
-            echo -e "检测到您未启动V2bX或V2bX自动重启失败，是否查看日志？[Y/n]" && echo
-            read -e -rp "(默认: y):" yn
-            [[ -z ${yn} ]] && yn="y"
-            if [[ ${yn} == [Yy] ]]; then
-               show_log
-            fi
-            ;;
-        2)
-            echo -e "V2bX状态: ${red}未安装${plain}"
-    esac
+    local config_path="/etc/V2bX/config.json"
+    local edit_path backup_path editor service_was_active=0
+    command -v jq >/dev/null 2>&1 || {
+        echo -e "${red}缺少 jq，无法安全校验配置。请先安装 jq。${plain}"
+        return 1
+    }
+    [[ -f "$config_path" && ! -L "$config_path" ]] || {
+        echo -e "${red}配置文件不存在或不是普通文件: $config_path${plain}"
+        return 1
+    }
+    edit_path=$(mktemp /etc/V2bX/.config.edit.XXXXXX)
+    cp -a -- "$config_path" "$edit_path"
+    editor="${EDITOR:-vi}"
+    "$editor" "$edit_path"
+    if cmp -s -- "$edit_path" "$config_path"; then
+        rm -f -- "$edit_path"
+        echo "配置未改变"
+        return 0
+    fi
+    if ! jq -e '(.Nodes | type) == "array" and (.Nodes | length > 0)' "$edit_path" >/dev/null; then
+        rm -f -- "$edit_path"
+        echo -e "${red}配置不是有效 JSON，未修改在线文件。${plain}"
+        return 1
+    fi
+    if ! jq -e '
+        [.Nodes[] |
+          select((.CertConfig.CertMode // "none") == "http" or
+                 (.CertConfig.CertMode // "none") == "dns" or
+                 (.CertConfig.CertMode // "none") == "self") |
+          {path: [(.CertConfig.CertFile // ""), (.CertConfig.KeyFile // "")], domain: (.CertConfig.CertDomain // "")}
+        ] | group_by(.path) | all((map(.domain) | unique | length) <= 1)
+    ' "$edit_path" >/dev/null; then
+        rm -f -- "$edit_path"
+        echo -e "${red}多个不同证书域名共用了同一证书路径，拒绝应用。${plain}"
+        return 1
+    fi
+    check_status >/dev/null 2>&1 && service_was_active=1 || true
+    backup_path="${config_path}.before-edit.$(date -u +%Y%m%dT%H%M%SZ)"
+    cp -a -- "$config_path" "$backup_path"
+    chmod --reference="$config_path" "$edit_path" 2>/dev/null || chmod 0600 "$edit_path"
+    mv -f -- "$edit_path" "$config_path"
+    if ((service_was_active)); then
+        restart 0
+        if ! check_status >/dev/null 2>&1; then
+            cp -a -- "$backup_path" "$config_path"
+            restart 0 || true
+            echo -e "${red}新配置启动失败，已恢复 $backup_path${plain}"
+            return 1
+        fi
+    fi
+    echo -e "${green}配置已校验并应用，备份: $backup_path${plain}"
 }
 
 uninstall() {
@@ -285,28 +344,108 @@ disable() {
 }
 
 show_log() {
-    if [[ x"${release}" == x"alpine" ]]; then
-        echo -e "${red}alpine系统暂不支持日志查看${plain}\n" && exit 1
-    else
+    local log_files=()
+    while IFS= read -r file; do
+        log_files+=("$file")
+    done < <(find /var/log/V2bX /etc/V2bX -maxdepth 1 -type f -name '*.log' -print 2>/dev/null | sort -u)
+    if ((${#log_files[@]} > 0)); then
+        tail -n 200 -F -- "${log_files[@]}"
+    elif [[ x"${release}" != x"alpine" ]]; then
         journalctl -u V2bX.service -e --no-pager -f
+    else
+        echo -e "${red}尚未找到 V2bX 日志文件${plain}\n" && return 1
     fi
     if [[ $# == 0 ]]; then
         before_show_menu
     fi
 }
 
-install_bbr() {
-    bash <(curl -L -s https://github.com/ylx2016/Linux-NetSpeed/raw/master/tcpx.sh)
+show_user_log() {
+    local uuid="${2:-}" minutes="${3:-60}" pattern max_lines=2000 file
+    [[ "$minutes" =~ ^[0-9]+$ ]] && ((minutes >= 1 && minutes <= 10080)) || {
+        echo -e "${red}分钟数必须在 1 到 10080 之间${plain}"
+        return 2
+    }
+    if [[ -n "$uuid" ]]; then
+        pattern="$uuid"
+    else
+        pattern='abuse guard rejected|panel (protocol )?rule rejected|policy rejected|node safety rule rejected|connection or device limit rejected|access (domain|protocol).*reject|client_connection_rate|distinct_(destination|ip|port)_scan|outbound_connection_rate|udp_flow_(destination|ip|port)_scan'
+    fi
+    {
+        if [[ x"${release}" != x"alpine" ]]; then
+            journalctl -u V2bX.service --since "-$minutes minutes" --no-pager -o short-iso 2>/dev/null || true
+        fi
+        while IFS= read -r file; do
+            echo "===== $file ====="
+            tail -n 50000 -- "$file" 2>/dev/null || true
+        done < <(find /var/log/V2bX /etc/V2bX -maxdepth 1 -type f -name '*.log' -mmin "-$minutes" -print 2>/dev/null | sort -u)
+    } |
+        sed -E \
+            -e 's/([?&](token|api[_-]?key)=)[^&[:space:]]+/\1REDACTED/Ig' \
+            -e 's/(ApiKey["=:[:space:]]+)[^",[:space:]]+/\1REDACTED/Ig' |
+        if [[ -n "$uuid" ]]; then grep -Fi -- "$pattern"; else grep -Ei -- "$pattern"; fi |
+        tail -n "$max_lines" || true
+    echo "最多显示最后 $max_lines 条；文件日志按文件修改时间筛选，完整 URL 不在代理可见范围内。"
+}
+
+tune_network() {
+    local action="${2:-check}"
+    local helper="/usr/local/share/v2bx/network-tune.sh"
+    case "$action" in
+        check|apply|rollback) ;;
+        *) echo -e "${red}用法: V2bX tune [check|apply|rollback]${plain}"; return 2 ;;
+    esac
+    [[ -x "$helper" ]] || {
+        echo -e "${red}网络调优组件不存在: $helper，请先升级安装脚本。${plain}"
+        return 1
+    }
+    "$helper" "$action" "${@:3}"
+}
+
+manage_resources() {
+    local action="${2:-status}"
+    local helper="/usr/local/share/v2bx/resource-guard.sh"
+    case "$action" in
+        check|apply|status|rollback) ;;
+        *) echo -e "${red}用法: V2bX resources [check|apply|status|rollback]${plain}"; return 2 ;;
+    esac
+    [[ -x "$helper" ]] || {
+        echo -e "${red}资源保护组件不存在: $helper，请先升级安装脚本。${plain}"
+        return 1
+    }
+    "$helper" "$action" "${@:3}"
+}
+
+run_config_generator() {
+    local helper="/usr/local/share/v2bx/initconfig.sh" temp=""
+    if [[ ! -f "$helper" ]]; then
+        temp=$(mktemp)
+        if ! curl --proto '=https' --tlsv1.2 -fLsS --retry 3 -o "$temp" "$script_base_url/initconfig.sh" ||
+           ! bash -n "$temp"; then
+            rm -f -- "$temp"
+            echo -e "${red}配置生成组件下载失败或语法无效${plain}"
+            return 1
+        fi
+        helper="$temp"
+    fi
+    # The helper defines the maintained generate_config_file implementation.
+    source "$helper"
+    generate_config_file
+    [[ -n "$temp" ]] && rm -f -- "$temp"
 }
 
 update_shell() {
-    wget -O /usr/bin/V2bX -N --no-check-certificate https://raw.githubusercontent.com/wyx2685/V2bX-script/master/V2bX.sh
-    if [[ $? != 0 ]]; then
+    local temp
+    temp=$(mktemp /usr/bin/.V2bX.update.XXXXXX)
+    if ! curl --proto '=https' --tlsv1.2 -fLsS --retry 3 -o "$temp" "$script_base_url/V2bX.sh" ||
+       ! bash -n "$temp"; then
+        rm -f -- "$temp"
         echo ""
         echo -e "${red}下载脚本失败，请检查本机能否连接 Github${plain}"
         before_show_menu
     else
-        chmod +x /usr/bin/V2bX
+        chmod 0755 "$temp"
+        mv -f -- "$temp" /usr/bin/V2bX
         echo -e "${green}升级脚本成功，请重新运行脚本${plain}" && exit 0
     fi
 }
@@ -921,23 +1060,6 @@ EOF
     before_show_menu
 }
 
-# 放开防火墙端口
-open_ports() {
-    systemctl stop firewalld.service 2>/dev/null
-    systemctl disable firewalld.service 2>/dev/null
-    setenforce 0 2>/dev/null
-    ufw disable 2>/dev/null
-    iptables -P INPUT ACCEPT 2>/dev/null
-    iptables -P FORWARD ACCEPT 2>/dev/null
-    iptables -P OUTPUT ACCEPT 2>/dev/null
-    iptables -t nat -F 2>/dev/null
-    iptables -t mangle -F 2>/dev/null
-    iptables -F 2>/dev/null
-    iptables -X 2>/dev/null
-    netfilter-persistent save 2>/dev/null
-    echo -e "${green}放开防火墙端口成功！${plain}"
-}
-
 show_usage() {
     echo "V2bX 管理脚本使用方法: "
     echo "------------------------------------------"
@@ -949,6 +1071,9 @@ show_usage() {
     echo "V2bX enable       - 设置 V2bX 开机自启"
     echo "V2bX disable      - 取消 V2bX 开机自启"
     echo "V2bX log          - 查看 V2bX 日志"
+    echo "V2bX userlog [UUID] [分钟] - 查看阻断/滥用日志"
+    echo "V2bX tune check|apply|rollback - 管理保守网络调优"
+    echo "V2bX resources check|apply|status|rollback - 管理低内存保护"
     echo "V2bX x25519       - 生成 x25519 密钥"
     echo "V2bX generate     - 生成 V2bX 配置文件"
     echo "V2bX update       - 更新 V2bX"
@@ -962,7 +1087,7 @@ show_usage() {
 show_menu() {
     echo -e "
   ${green}V2bX 后端管理脚本，${plain}${red}不适用于docker${plain}
---- https://github.com/wyx2685/V2bX ---
+ --- https://github.com/rmomo5285-droid/V2bX ---
   ${green}0.${plain} 修改配置
 ————————————————
   ${green}1.${plain} 安装 V2bX
@@ -978,17 +1103,18 @@ show_menu() {
   ${green}9.${plain} 设置 V2bX 开机自启
   ${green}10.${plain} 取消 V2bX 开机自启
 ————————————————
-  ${green}11.${plain} 一键安装 bbr (最新内核)
+  ${green}11.${plain} 检查/应用保守网络调优 (不更换内核)
   ${green}12.${plain} 查看 V2bX 版本
   ${green}13.${plain} 生成 X25519 密钥
   ${green}14.${plain} 升级 V2bX 维护脚本
   ${green}15.${plain} 生成 V2bX 配置文件
-  ${green}16.${plain} 放行 VPS 的所有网络端口
-  ${green}17.${plain} 退出脚本
+  ${green}16.${plain} 查看用户阻断/滥用日志
+  ${green}17.${plain} 检查/应用低内存原生 Hy2 保护
+  ${green}18.${plain} 退出脚本
  "
  #后续更新可加入上方字符串中
     show_status
-    echo && read -rp "请输入选择 [0-17]: " num
+    echo && read -rp "请输入选择 [0-18]: " num
 
     case "${num}" in
         0) config ;;
@@ -1002,14 +1128,15 @@ show_menu() {
         8) check_install && show_log ;;
         9) check_install && enable ;;
         10) check_install && disable ;;
-        11) install_bbr ;;
+        11) tune_network tune apply ;;
         12) check_install && show_V2bX_version ;;
         13) check_install && generate_x25519_key ;;
         14) update_shell ;;
-        15) generate_config_file ;;
-        16) open_ports ;;
-        17) exit ;;
-        *) echo -e "${red}请输入正确的数字 [0-16]${plain}" ;;
+        15) run_config_generator ;;
+        16) show_user_log userlog "" 60 ;;
+        17) manage_resources resources apply ;;
+        18) exit ;;
+        *) echo -e "${red}请输入正确的数字 [0-18]${plain}" ;;
     esac
 }
 
@@ -1023,9 +1150,12 @@ if [[ $# > 0 ]]; then
         "enable") check_install 0 && enable 0 ;;
         "disable") check_install 0 && disable 0 ;;
         "log") check_install 0 && show_log 0 ;;
+        "userlog") check_install 0 && show_user_log "$@" ;;
+        "tune") tune_network "$@" ;;
+        "resources") manage_resources "$@" ;;
         "update") check_install 0 && update 0 $2 ;;
         "config") config $* ;;
-        "generate") generate_config_file ;;
+        "generate") run_config_generator ;;
         "install") check_uninstall 0 && install 0 ;;
         "uninstall") check_install 0 && uninstall 0 ;;
         "x25519") check_install 0 && generate_x25519_key 0 ;;

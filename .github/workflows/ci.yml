@@ -1,0 +1,25 @@
+name: Script validation
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell syntax
+        run: |
+          find . -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+      - name: Run regression tests
+        run: |
+          for test_file in tests/test-*.sh; do
+            echo "Running $test_file"
+            bash "$test_file"
+          done

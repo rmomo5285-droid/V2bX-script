@@ -1,0 +1,13 @@
+/etc/V2bX/*.log /var/log/V2bX/*.log {
+    daily
+    maxsize 10M
+    rotate 5
+    maxage 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0640 root root
+    su root root
+}
