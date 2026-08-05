@@ -24,5 +24,9 @@ grep -q -- '--apply-resource-guard' "$repo_dir/migrate-to-rmomo-v2bx.sh" ||
     fail "migration has no explicit memory-guard opt-in"
 grep -q 'V2BX_ENABLE_RESOURCE_GUARD' "$repo_dir/install.sh" ||
     fail "installer has no explicit memory-guard opt-in"
+grep -q 'manage_bbr_kernel' "$repo_dir/V2bX.sh" ||
+    fail "manager has no BBR kernel compatibility entrypoint"
+grep -q 'bbr-kernel.sh' "$repo_dir/install.sh" ||
+    fail "installer does not deploy the BBR kernel helper"
 
 echo "PASS: installer and config generator have single maintained implementations"

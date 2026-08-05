@@ -11,7 +11,7 @@ skip_resource_guard=1
 
 core_repo="${V2BX_CORE_REPO:-rmomo5285-droid/V2bX}"
 script_repo="${V2BX_SCRIPT_REPO:-rmomo5285-droid/V2bX-script}"
-script_ref="${V2BX_SCRIPT_REF:-v0.1.2}"
+script_ref="${V2BX_SCRIPT_REF:-v0.1.3}"
 root_dir="${V2BX_MIGRATE_ROOT:-/}"
 service_name="${V2BX_SERVICE_NAME:-V2bX}"
 
@@ -125,6 +125,7 @@ share_dir=$(root_path /usr/local/share/v2bx)
 initconfig_path="$share_dir/initconfig.sh"
 fixer_path="$share_dir/fix-legacy-hy2-config.sh"
 tuner_path="$share_dir/network-tune.sh"
+bbr_kernel_path="$share_dir/bbr-kernel.sh"
 resource_path="$share_dir/resource-guard.sh"
 migrator_path="$share_dir/migrate-to-rmomo-v2bx.sh"
 logrotate_path=$(root_path /etc/logrotate.d/v2bx)
@@ -383,6 +384,7 @@ create_backup() {
     backup_copy "$initconfig_path" "$dir/initconfig.sh" "$dir/initconfig-existed" || return 1
     backup_copy "$fixer_path" "$dir/fixer.sh" "$dir/fixer-existed" || return 1
     backup_copy "$tuner_path" "$dir/tuner.sh" "$dir/tuner-existed" || return 1
+    backup_copy "$bbr_kernel_path" "$dir/bbr-kernel.sh" "$dir/bbr-kernel-existed" || return 1
     backup_copy "$resource_path" "$dir/resource-guard.sh" "$dir/resource-existed" || return 1
     backup_copy "$migrator_path" "$dir/migrator.sh" "$dir/migrator-existed" || return 1
     backup_copy "$logrotate_path" "$dir/logrotate" "$dir/logrotate-existed" || return 1
@@ -395,7 +397,7 @@ create_backup() {
 validate_backup() {
     local dir="$1" marker value
     [[ -d "$dir" && -f "$dir/complete" && -f "$dir/service-was-active" ]] || return 1
-    for marker in binary config hy2 manager service initconfig fixer tuner resource migrator logrotate; do
+    for marker in binary config hy2 manager service initconfig fixer tuner bbr-kernel resource migrator logrotate; do
         [[ -f "$dir/$marker-existed" ]] || return 1
         value=$(<"$dir/$marker-existed")
         [[ "$value" == "0" || "$value" == "1" ]] || return 1
@@ -409,6 +411,7 @@ validate_backup() {
                 initconfig) [[ -f "$dir/initconfig.sh" ]] || return 1 ;;
                 fixer) [[ -f "$dir/fixer.sh" ]] || return 1 ;;
                 tuner) [[ -f "$dir/tuner.sh" ]] || return 1 ;;
+                bbr-kernel) [[ -f "$dir/bbr-kernel.sh" ]] || return 1 ;;
                 resource) [[ -f "$dir/resource-guard.sh" ]] || return 1 ;;
                 migrator) [[ -f "$dir/migrator.sh" ]] || return 1 ;;
                 logrotate) [[ -f "$dir/logrotate" ]] || return 1 ;;
@@ -442,6 +445,7 @@ restore_backup() {
     restore_one "$dir/initconfig-existed" "$dir/initconfig.sh" "$initconfig_path"
     restore_one "$dir/fixer-existed" "$dir/fixer.sh" "$fixer_path"
     restore_one "$dir/tuner-existed" "$dir/tuner.sh" "$tuner_path"
+    restore_one "$dir/bbr-kernel-existed" "$dir/bbr-kernel.sh" "$bbr_kernel_path"
     restore_one "$dir/resource-existed" "$dir/resource-guard.sh" "$resource_path"
     restore_one "$dir/migrator-existed" "$dir/migrator.sh" "$migrator_path"
     restore_one "$dir/logrotate-existed" "$dir/logrotate" "$logrotate_path"
@@ -569,7 +573,7 @@ run_apply() {
     [[ -n "$version" ]] || resolve_latest_version
 
     local asset release_base archive checksum expected actual unpack_dir
-    local staged_config staged_hy2 staged_manager fixer tuner resource initconfig staged_migrator staged_logrotate
+    local staged_config staged_hy2 staged_manager fixer tuner bbr_kernel resource initconfig staged_migrator staged_logrotate
     local manifest helper name destination id latest_stage raw_base resource_output resource_backup network_output network_backup
     local -a component_names
     asset="V2bX-$(detect_asset_name).zip"
@@ -602,6 +606,7 @@ run_apply() {
         V2bX.sh
         initconfig.sh
         fix-legacy-hy2-config.sh
+        bbr-kernel.sh
         network-tune.sh
         resource-guard.sh
         migrate-to-rmomo-v2bx.sh
@@ -617,10 +622,11 @@ run_apply() {
     initconfig="$temp_dir/initconfig.sh"
     fixer="$temp_dir/fix-legacy-hy2-config.sh"
     tuner="$temp_dir/network-tune.sh"
+    bbr_kernel="$temp_dir/bbr-kernel.sh"
     resource="$temp_dir/resource-guard.sh"
     staged_migrator="$temp_dir/migrate-to-rmomo-v2bx.sh"
     staged_logrotate="$temp_dir/v2bx.logrotate"
-    chmod 0755 "$staged_manager" "$initconfig" "$fixer" "$tuner" "$resource" "$staged_migrator"
+    chmod 0755 "$staged_manager" "$initconfig" "$fixer" "$tuner" "$bbr_kernel" "$resource" "$staged_migrator"
     staged_hy2="$temp_dir/hy2config.yaml"
     prepare_hy2 "$hy2_path" "$staged_hy2" "$fixer"
 
@@ -647,11 +653,12 @@ run_apply() {
     install -m 0755 "$staged_manager" "${manager_path}.new"
     mv -f -- "${manager_path}.new" "$manager_path"
     mkdir -p -- "$share_dir" "$(dirname "$logrotate_path")" "$(root_path /var/log/V2bX)"
-    for name in initconfig fixer tuner resource migrator; do
+    for name in initconfig fixer tuner bbr-kernel resource migrator; do
         case "$name" in
             initconfig) helper="$initconfig"; destination="$initconfig_path" ;;
             fixer) helper="$fixer"; destination="$fixer_path" ;;
             tuner) helper="$tuner"; destination="$tuner_path" ;;
+            bbr-kernel) helper="$bbr_kernel"; destination="$bbr_kernel_path" ;;
             resource) helper="$resource"; destination="$resource_path" ;;
             migrator) helper="$staged_migrator"; destination="$migrator_path" ;;
         esac

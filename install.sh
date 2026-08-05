@@ -124,7 +124,7 @@ check_status() {
 }
 
 install_V2bX_safe() {
-    local requested_version="${1:-}" script_ref="${V2BX_SCRIPT_REF:-v0.1.2}"
+    local requested_version="${1:-}" script_ref="${V2BX_SCRIPT_REF:-v0.1.3}"
     local script_base="https://raw.githubusercontent.com/rmomo5285-droid/V2bX-script/${script_ref}"
     local migration migration_manifest temp_dir release_tag asset archive checksum expected actual helper name manifest
 
@@ -207,7 +207,7 @@ install_V2bX_safe() {
         echo -e "${red}组件校验清单下载失败，未安装${plain}"
         return 1
     fi
-    for name in V2bX.sh initconfig.sh network-tune.sh resource-guard.sh fix-legacy-hy2-config.sh migrate-to-rmomo-v2bx.sh V2bX.service v2bx.logrotate; do
+    for name in V2bX.sh initconfig.sh bbr-kernel.sh network-tune.sh resource-guard.sh fix-legacy-hy2-config.sh migrate-to-rmomo-v2bx.sh V2bX.service v2bx.logrotate; do
         helper="$temp_dir/scripts/$name"
         if ! curl --proto '=https' --tlsv1.2 -fLsS --retry 3 -o "$helper" "$script_base/$name"; then
             rm -rf -- "$temp_dir"
@@ -241,7 +241,7 @@ install_V2bX_safe() {
         install -m 0600 "$temp_dir/unpack/config.json" /etc/V2bX/config.json
     fi
     install -m 0755 "$temp_dir/scripts/V2bX.sh" /usr/bin/V2bX
-    for name in initconfig.sh network-tune.sh resource-guard.sh fix-legacy-hy2-config.sh migrate-to-rmomo-v2bx.sh; do
+    for name in initconfig.sh bbr-kernel.sh network-tune.sh resource-guard.sh fix-legacy-hy2-config.sh migrate-to-rmomo-v2bx.sh; do
         install -m 0755 "$temp_dir/scripts/$name" "/usr/local/share/v2bx/$name"
     done
     ln -sfn /usr/bin/V2bX /usr/bin/v2bx
@@ -288,7 +288,7 @@ EOF
     fi
     if [[ "${V2BX_SKIP_NETWORK_TUNING:-0}" != "1" ]]; then
         /usr/local/share/v2bx/network-tune.sh apply ||
-            echo -e "${yellow}当前内核不支持全部保守网络调优，V2bX 安装不受影响${plain}"
+            echo -e "${yellow}当前内核不支持全部保守网络调优；可执行 V2bX bbr check，确认缺失后再运行 V2bX bbr install${plain}"
     fi
 }
 

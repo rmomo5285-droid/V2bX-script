@@ -402,6 +402,20 @@ tune_network() {
     "$helper" "$action" "${@:3}"
 }
 
+manage_bbr_kernel() {
+    local action="${2:-check}"
+    local helper="/usr/local/share/v2bx/bbr-kernel.sh"
+    case "$action" in
+        check|install) ;;
+        *) echo -e "${red}用法: V2bX bbr [check|install] [--yes]${plain}"; return 2 ;;
+    esac
+    [[ -x "$helper" ]] || {
+        echo -e "${red}BBR 内核组件不存在: $helper，请先升级安装脚本。${plain}"
+        return 1
+    }
+    "$helper" "$action" "${@:3}"
+}
+
 manage_resources() {
     local action="${2:-status}"
     local helper="/usr/local/share/v2bx/resource-guard.sh"
@@ -611,11 +625,12 @@ show_menu() {
   ${green}15.${plain} 生成 V2bX 配置文件
   ${green}16.${plain} 查看用户阻断/滥用日志
   ${green}17.${plain} 检查/应用低内存原生 Hy2 保护
-  ${green}18.${plain} 退出脚本
+  ${green}18.${plain} 检测/安装支持 BBR 的内核（第三方，可能需重启）
+  ${green}19.${plain} 退出脚本
  "
  #后续更新可加入上方字符串中
     show_status
-    echo && read -rp "请输入选择 [0-18]: " num
+    echo && read -rp "请输入选择 [0-19]: " num
 
     case "${num}" in
         0) config ;;
@@ -636,8 +651,9 @@ show_menu() {
         15) run_config_generator ;;
         16) show_user_log userlog "" 60 ;;
         17) manage_resources resources apply ;;
-        18) exit ;;
-        *) echo -e "${red}请输入正确的数字 [0-18]${plain}" ;;
+        18) manage_bbr_kernel bbr install ;;
+        19) exit ;;
+        *) echo -e "${red}请输入正确的数字 [0-19]${plain}" ;;
     esac
 }
 
@@ -653,6 +669,7 @@ if [[ $# > 0 ]]; then
         "log") check_install 0 && show_log 0 ;;
         "userlog") check_install 0 && show_user_log "$@" ;;
         "tune") tune_network "$@" ;;
+        "bbr") manage_bbr_kernel "$@" ;;
         "resources") manage_resources "$@" ;;
         "update") check_install 0 && update 0 $2 ;;
         "config") config $* ;;

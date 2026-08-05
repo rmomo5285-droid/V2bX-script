@@ -2,13 +2,16 @@
 
 ## 发布状态与边界
 
-当前稳定组合为部署脚本 `v0.1.2` 与核心 `v0.1.0`。正式 Release 和 Linux 核心
+当前稳定组合为部署脚本 `v0.1.3` 与核心 `v0.1.1`。正式 Release 和 Linux 核心
 资产已经验收；扩大到生产节点前仍需完成五节点真实灰度。
 
 部署脚本 `v0.1.1` 及以后版本能识别早期修复脚本生成的完整
 `codex-bilibili-cn-exception` 块。只有标记、位置和全部规则完全一致时，才会连同
 旧 `direct(geosite:google)`、`reject(geosite:cn)` 和 `reject(geoip:cn)` 一起删除；
 任何自定义、重复、部分或损坏的 ACL 都会在停服前被拒绝。
+删除后由新核心的公共出站判定器统一执行 XBoard `block` 域名和
+`protocol:bittorrent` 规则，Xray、sing-box 与原生 Hysteria2 不再维护互相冲突的
+核心专属阻断清单。
 
 迁移保留 `/etc/V2bX`、全部已配置核心与节点以及自定义路由。仅补充缺失的加固
 默认值；已有 `AbuseGuardConfig` 字段优先。网络调优与低内存保护是迁移之后的
@@ -20,11 +23,12 @@
 ## 发布前验收
 
 在两个干净工作树中执行各自 README 的开发验证，并确认对应 GitHub Actions
-成功。部署仓库的 `components.sha256` 必须与下列八个文件完全一致：
+成功。部署仓库的 `components.sha256` 必须与下列九个文件完全一致：
 
 ```text
 V2bX.sh
 initconfig.sh
+bbr-kernel.sh
 network-tune.sh
 resource-guard.sh
 fix-legacy-hy2-config.sh
@@ -59,7 +63,7 @@ sudo ./migrate-to-rmomo-v2bx.sh check
 灰度时分别固定核心版本和部署脚本版本，不使用漂移的分支名：
 
 ```bash
-sudo env V2BX_SCRIPT_REF=v0.1.2 ./migrate-to-rmomo-v2bx.sh apply --version v0.1.0
+sudo env V2BX_SCRIPT_REF=v0.1.3 ./migrate-to-rmomo-v2bx.sh apply --version v0.1.1
 ```
 
 迁移会在旧服务仍运行时完成下载、核心归档摘要、组件摘要、shell 语法、配置和
@@ -100,6 +104,19 @@ sudo V2bX tune check
 sudo V2bX tune apply
 sudo V2bX tune rollback
 ```
+
+若 `V2bX tune check` 明确报告当前内核没有 BBR，可选择打开经过固定提交和
+SHA-256 校验的第三方交互式内核安装器：
+
+```bash
+sudo V2bX bbr check
+sudo V2bX bbr install
+```
+
+该入口不会随安装或迁移自动执行，也不会停止 V2bX。更换内核可能需要重启，并
+可能改变启动项；操作前必须确保能使用服务商控制台。入口脚本本身固定并校验，
+但具体内核资产由第三方安装器在运行时选择和下载。重启后再次执行 `V2bX bbr
+check`，确认可用后执行 `V2bX tune apply`。
 
 内存硬限制默认不随安装或迁移启用。真实业务可能稳定占用 600 MiB 或更多，固定
 `MemoryMax` 会把正常负载误判为异常。只有完成业务峰值测量并确认阈值后，才手工

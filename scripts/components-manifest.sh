@@ -7,6 +7,7 @@ mode="${1:-check}"
 components=(
     V2bX.sh
     initconfig.sh
+    bbr-kernel.sh
     network-tune.sh
     resource-guard.sh
     fix-legacy-hy2-config.sh

@@ -60,7 +60,7 @@ case "$url" in
     */V2bX-linux-64.zip.sha256) source_path="${FIXTURE_DIR:?}/V2bX-linux-64.zip.sha256" ;;
     */V2bX-linux-64.zip) source_path="${FIXTURE_DIR:?}/V2bX-linux-64.zip" ;;
     */components.sha256) source_path="${REPO_DIR:?}/components.sha256" ;;
-    */V2bX.sh|*/initconfig.sh|*/fix-legacy-hy2-config.sh|*/network-tune.sh|*/resource-guard.sh|*/migrate-to-rmomo-v2bx.sh|*/v2bx.logrotate)
+    */V2bX.sh|*/initconfig.sh|*/fix-legacy-hy2-config.sh|*/bbr-kernel.sh|*/network-tune.sh|*/resource-guard.sh|*/migrate-to-rmomo-v2bx.sh|*/v2bx.logrotate)
         source_path="${REPO_DIR:?}/${url##*/}"
         ;;
     *)
@@ -246,6 +246,7 @@ cmp -s "$temp_dir/success-manager.before" "$success_root/usr/bin/V2bX" || fail "
 cmp -s "$temp_dir/success-service.before" "$success_root/etc/systemd/system/V2bX.service" || fail "explicit rollback did not restore service"
 [[ "$(<"$success_state")" == "active" ]] || fail "explicit rollback did not restore active state"
 [[ ! -e "$success_root/usr/local/share/v2bx/initconfig.sh" ]] || fail "explicit rollback left a newly installed helper"
+[[ ! -e "$success_root/usr/local/share/v2bx/bbr-kernel.sh" ]] || fail "explicit rollback left the BBR kernel helper"
 
 # Failed health check: the ERR transaction handler must restore byte-identical originals.
 failure_root="$temp_dir/failure-root"
@@ -270,6 +271,7 @@ cmp -s "$temp_dir/failure-manager.before" "$failure_root/usr/bin/V2bX" || fail "
 [[ "$(<"$failure_state")" == "active" ]] || fail "automatic rollback did not restore active state"
 [[ ! -e "$failure_root/var/lib/v2bx-migrate/latest" ]] || fail "failed migration was recorded as latest"
 [[ ! -e "$failure_root/usr/local/share/v2bx/initconfig.sh" ]] || fail "automatic rollback left a newly installed helper"
+[[ ! -e "$failure_root/usr/local/share/v2bx/bbr-kernel.sh" ]] || fail "automatic rollback left the BBR kernel helper"
 find "$failure_root/var/lib/v2bx-migrate/backups" -mindepth 1 -maxdepth 1 -type d | grep -q . ||
     fail "failed migration did not retain its recovery backup"
 
