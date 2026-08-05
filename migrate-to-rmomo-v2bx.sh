@@ -7,11 +7,11 @@ backup_id=""
 skip_config_patch=0
 skip_hy2_fix=0
 skip_network_tune=0
-skip_resource_guard=0
+skip_resource_guard=1
 
 core_repo="${V2BX_CORE_REPO:-rmomo5285-droid/V2bX}"
 script_repo="${V2BX_SCRIPT_REPO:-rmomo5285-droid/V2bX-script}"
-script_ref="${V2BX_SCRIPT_REF:-v0.1.1}"
+script_ref="${V2BX_SCRIPT_REF:-v0.1.2}"
 root_dir="${V2BX_MIGRATE_ROOT:-/}"
 service_name="${V2BX_SERVICE_NAME:-V2bX}"
 
@@ -34,7 +34,8 @@ Options:
   --skip-config-patch   Do not add missing AbuseGuardConfig defaults
   --skip-hy2-fix        Do not remove the exact old generated Hy2 China ACL
   --skip-network-tune   Do not run the conservative network tuner after success
-  --skip-resource-guard Do not apply the low-memory native-Hy2 systemd guard
+  --apply-resource-guard Explicitly apply the optional native-Hy2 memory guard
+  --skip-resource-guard Keep the optional memory guard disabled (default)
   -h, --help            Show this help
 
 The script preserves /etc/V2bX, rejects unverified release assets, keeps the
@@ -81,6 +82,10 @@ while (($# > 0)); do
             ;;
         --skip-resource-guard)
             skip_resource_guard=1
+            shift
+            ;;
+        --apply-resource-guard)
+            skip_resource_guard=0
             shift
             ;;
         -h|--help)
@@ -456,6 +461,10 @@ transaction_failure() {
     set +e
     if ((transaction_started)) && [[ -n "$transaction_backup" ]]; then
         echo "ERROR: switched installation failed; restoring the previous V2bX" >&2
+        if ! rollback_auxiliary_changes "$transaction_backup"; then
+            echo "CRITICAL: automatic rollback of auxiliary changes was incomplete: $transaction_backup" >&2
+            status=1
+        fi
         if ! restore_backup "$transaction_backup"; then
             echo "CRITICAL: automatic rollback was incomplete: $transaction_backup" >&2
             status=1
@@ -536,11 +545,13 @@ verify_component() {
 }
 
 wait_for_service() {
-    local attempt consecutive=0
-    for attempt in {1..15}; do
+    local required="${1:-5}" attempts="${2:-15}" attempt consecutive=0
+    [[ "$required" =~ ^[0-9]+$ && "$attempts" =~ ^[0-9]+$ &&
+        "$required" -ge 1 && "$attempts" -ge "$required" && "$attempts" -le 300 ]] || return 1
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
         if service_active; then
             ((++consecutive))
-            ((consecutive >= 5)) && return 0
+            ((consecutive >= required)) && return 0
         else
             consecutive=0
         fi
@@ -656,14 +667,6 @@ run_apply() {
     fi
     "$binary_path" version >/dev/null 2>&1
 
-    latest_stage=$(mktemp "$state_dir/.latest.XXXXXX")
-    printf '%s\n' "$id" > "$latest_stage"
-    mv -f -- "$latest_stage" "$latest_path"
-    transaction_started=0
-    trap - ERR INT TERM
-
-    echo "APPLIED: switched to $core_repo $version"
-    echo "BACKUP: $id"
     if ((skip_resource_guard == 0)); then
         if resource_output=$(bash "$resource_path" apply 2>&1); then
             printf '%s\n' "$resource_output"
@@ -685,6 +688,20 @@ run_apply() {
             echo "WARNING: core migration succeeded but network tuning was unsupported or failed; V2bX was not rolled back" >&2
         fi
     fi
+
+    if ((service_was_active)); then
+        wait_for_service 10 30
+    fi
+    "$binary_path" version >/dev/null 2>&1
+
+    latest_stage=$(mktemp "$state_dir/.latest.XXXXXX")
+    printf '%s\n' "$id" > "$latest_stage"
+    mv -f -- "$latest_stage" "$latest_path"
+    transaction_started=0
+    trap - ERR INT TERM
+
+    echo "APPLIED: switched to $core_repo $version"
+    echo "BACKUP: $id"
     run_status
 }
 

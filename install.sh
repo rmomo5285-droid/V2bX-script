@@ -124,7 +124,7 @@ check_status() {
 }
 
 install_V2bX_safe() {
-    local requested_version="${1:-}" script_ref="${V2BX_SCRIPT_REF:-v0.1.1}"
+    local requested_version="${1:-}" script_ref="${V2BX_SCRIPT_REF:-v0.1.2}"
     local script_base="https://raw.githubusercontent.com/rmomo5285-droid/V2bX-script/${script_ref}"
     local migration migration_manifest temp_dir release_tag asset archive checksum expected actual helper name manifest
 
@@ -280,9 +280,11 @@ EOF
         echo "请修改 /etc/V2bX/config.json 后执行: V2bX restart"
     fi
 
-    if [[ "${V2BX_SKIP_RESOURCE_GUARD:-0}" != "1" ]]; then
+    if [[ "${V2BX_ENABLE_RESOURCE_GUARD:-0}" == "1" ]]; then
         /usr/local/share/v2bx/resource-guard.sh apply ||
             echo -e "${yellow}低内存保护不适用或未能应用，V2bX 安装不受影响${plain}"
+    else
+        echo "内存硬限制默认不启用；仅在实测业务峰值后手工执行 V2bX resources apply。"
     fi
     if [[ "${V2BX_SKIP_NETWORK_TUNING:-0}" != "1" ]]; then
         /usr/local/share/v2bx/network-tune.sh apply ||

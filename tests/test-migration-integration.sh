@@ -75,6 +75,7 @@ cat > "$fake_bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 command_name="${1:-}"
+fail_after_active="${FAKE_FAIL_AFTER_ACTIVE:-0}"
 printf 'systemctl %s\n' "$*" >> "${EVENT_LOG:?}"
 case "$command_name" in
     is-active)
@@ -82,6 +83,16 @@ case "$command_name" in
         if [[ "${FAKE_FAIL_NEW:-0}" == "1" ]] &&
            grep -q 'NEW_V2BX_FIXTURE' "${MIGRATE_ROOT:?}/usr/local/V2bX/V2bX"; then
             exit 3
+        fi
+        if [[ "$fail_after_active" =~ ^[0-9]+$ ]] &&
+           ((fail_after_active > 0)) &&
+           grep -q 'NEW_V2BX_FIXTURE' "${MIGRATE_ROOT:?}/usr/local/V2bX/V2bX"; then
+            active_count_file="${EVENT_LOG:?}.active-count"
+            active_count=0
+            [[ ! -f "$active_count_file" ]] || active_count=$(<"$active_count_file")
+            ((++active_count))
+            printf '%s\n' "$active_count" > "$active_count_file"
+            ((active_count <= fail_after_active)) || exit 3
         fi
         ;;
     stop)
@@ -177,13 +188,14 @@ EOF
 }
 
 run_migration() {
-    local root="$1" event_log="$2" service_state="$3" fail_new="$4"
+    local root="$1" event_log="$2" service_state="$3" fail_new="$4" fail_after_active="${5:-0}"
     PATH="$fake_bin:$PATH" \
     FIXTURE_DIR="$fixture_dir" REPO_DIR="$repo_dir" EVENT_LOG="$event_log" \
     SERVICE_STATE="$service_state" MIGRATE_ROOT="$root" FAKE_FAIL_NEW="$fail_new" \
+    FAKE_FAIL_AFTER_ACTIVE="$fail_after_active" \
     V2BX_MIGRATE_ROOT="$root" V2BX_MIGRATE_SKIP_ROOT_CHECK=1 \
     V2BX_SCRIPT_REF=v1.2.3 bash "$migrator" apply --version v1.2.3 \
-        --skip-network-tune --skip-resource-guard
+        --skip-network-tune
 }
 
 # Successful switch: everything is staged before stop, then explicit rollback restores it.
@@ -221,9 +233,12 @@ first_stop=$(grep -n '^systemctl stop ' "$success_events" | head -n1 | cut -d: -
 [[ -n "$last_curl" && -n "$first_stop" && "$last_curl" -lt "$first_stop" ]] ||
     fail "service stopped before every release component was staged"
 
-PATH="$fake_bin:$PATH" EVENT_LOG="$success_events" SERVICE_STATE="$success_state" \
-MIGRATE_ROOT="$success_root" V2BX_MIGRATE_ROOT="$success_root" \
-V2BX_MIGRATE_SKIP_ROOT_CHECK=1 bash "$migrator" rollback > "$temp_dir/rollback.log" 2>&1
+if ! PATH="$fake_bin:$PATH" EVENT_LOG="$success_events" SERVICE_STATE="$success_state" \
+    MIGRATE_ROOT="$success_root" V2BX_MIGRATE_ROOT="$success_root" \
+    V2BX_MIGRATE_SKIP_ROOT_CHECK=1 bash "$migrator" rollback > "$temp_dir/rollback.log" 2>&1; then
+    cat "$temp_dir/rollback.log" >&2
+    fail "explicit rollback fixture exited nonzero"
+fi
 grep -q 'OLD_V2BX_FIXTURE' "$success_root/usr/local/V2bX/V2bX" || fail "explicit rollback did not restore binary"
 cmp -s "$temp_dir/success-config.before" "$success_root/etc/V2bX/config.json" || fail "explicit rollback changed original config"
 cmp -s "$temp_dir/success-hy2.before" "$success_root/etc/V2bX/hy2config.yaml" || fail "explicit rollback changed original Hy2 config"
@@ -258,4 +273,26 @@ cmp -s "$temp_dir/failure-manager.before" "$failure_root/usr/bin/V2bX" || fail "
 find "$failure_root/var/lib/v2bx-migrate/backups" -mindepth 1 -maxdepth 1 -type d | grep -q . ||
     fail "failed migration did not retain its recovery backup"
 
-echo "PASS: migration stages before stop and supports explicit and automatic rollback"
+# A service that passes the initial gate but dies before final commit must not
+# leave a false APPLIED result or a partially switched installation.
+late_root="$temp_dir/late-root"
+late_events="$temp_dir/late-events"
+late_state="$temp_dir/late-state"
+create_root "$late_root"
+cp -a "$late_root/etc/V2bX/config.json" "$temp_dir/late-config.before"
+cp -a "$late_root/etc/V2bX/hy2config.yaml" "$temp_dir/late-hy2.before"
+printf 'active\n' > "$late_state"
+: > "$late_events"
+set +e
+run_migration "$late_root" "$late_events" "$late_state" 0 5 > "$temp_dir/late.log" 2>&1
+late_status=$?
+set -e
+[[ "$late_status" -ne 0 ]] || fail "late service failure unexpectedly committed"
+grep -q 'restoring the previous V2bX' "$temp_dir/late.log" || fail "late failure did not trigger automatic rollback"
+grep -q 'OLD_V2BX_FIXTURE' "$late_root/usr/local/V2bX/V2bX" || fail "late failure did not restore binary"
+cmp -s "$temp_dir/late-config.before" "$late_root/etc/V2bX/config.json" || fail "late failure changed original config"
+cmp -s "$temp_dir/late-hy2.before" "$late_root/etc/V2bX/hy2config.yaml" || fail "late failure changed original Hy2 config"
+[[ "$(<"$late_state")" == "active" ]] || fail "late failure did not restore active state"
+[[ ! -e "$late_root/var/lib/v2bx-migrate/latest" ]] || fail "late failure was recorded as latest"
+
+echo "PASS: migration stages before stop and rolls back initial or late health failures"

@@ -2,10 +2,10 @@
 
 ## 发布状态与边界
 
-当前稳定组合为部署脚本 `v0.1.1` 与核心 `v0.1.0`。正式 Release 和 Linux 核心
+当前稳定组合为部署脚本 `v0.1.2` 与核心 `v0.1.0`。正式 Release 和 Linux 核心
 资产已经验收；扩大到生产节点前仍需完成五节点真实灰度。
 
-部署脚本 `v0.1.1` 能识别早期修复脚本生成的完整
+部署脚本 `v0.1.1` 及以后版本能识别早期修复脚本生成的完整
 `codex-bilibili-cn-exception` 块。只有标记、位置和全部规则完全一致时，才会连同
 旧 `direct(geosite:google)`、`reject(geosite:cn)` 和 `reject(geoip:cn)` 一起删除；
 任何自定义、重复、部分或损坏的 ACL 都会在停服前被拒绝。
@@ -59,7 +59,7 @@ sudo ./migrate-to-rmomo-v2bx.sh check
 灰度时分别固定核心版本和部署脚本版本，不使用漂移的分支名：
 
 ```bash
-sudo env V2BX_SCRIPT_REF=v0.1.1 ./migrate-to-rmomo-v2bx.sh apply --version v0.1.0
+sudo env V2BX_SCRIPT_REF=v0.1.2 ./migrate-to-rmomo-v2bx.sh apply --version v0.1.0
 ```
 
 迁移会在旧服务仍运行时完成下载、核心归档摘要、组件摘要、shell 语法、配置和
@@ -101,7 +101,9 @@ sudo V2bX tune apply
 sudo V2bX tune rollback
 ```
 
-低内存原生 Hysteria2 保护只应用于脚本判定符合条件的节点：
+内存硬限制默认不随安装或迁移启用。真实业务可能稳定占用 600 MiB 或更多，固定
+`MemoryMax` 会把正常负载误判为异常。只有完成业务峰值测量并确认阈值后，才手工
+检查和应用原生 Hysteria2 保护：
 
 ```bash
 sudo V2bX resources check

@@ -110,19 +110,18 @@ eligibility() {
     local memory
     command_exists "$systemctl_cmd" || { printf 'not-systemd\n'; return; }
     memory=$(mem_mib) || { printf 'memory-unknown\n'; return; }
+    ((memory >= 768)) || { printf 'memory-below-768MiB\n'; return; }
     ((memory <= 1280)) || { printf 'memory-above-1280MiB\n'; return; }
     config_is_native_hy2_only || { printf 'not-native-hy2-only\n'; return; }
     printf 'eligible\n'
 }
 
 limits_for_host() {
-    local memory
+    local memory high max
     memory=$(mem_mib)
-    if ((memory <= 1024)); then
-        printf '400M 550M\n'
-    else
-        printf '500M 700M\n'
-    fi
+    high=$((memory * 50 / 100))
+    max=$((memory * 75 / 100))
+    printf '%sM %sM\n' "$high" "$max"
 }
 
 render_dropin() {
@@ -192,10 +191,17 @@ validate_backup() {
 
 wait_for_service() {
     local attempt consecutive=0
-    for attempt in {1..15}; do
+    local required="${V2BX_RESOURCE_HEALTH_CONSECUTIVE:-20}"
+    local attempts="${V2BX_RESOURCE_HEALTH_ATTEMPTS:-60}"
+    [[ "$required" =~ ^[0-9]+$ && "$attempts" =~ ^[0-9]+$ &&
+        "$required" -ge 1 && "$attempts" -ge "$required" && "$attempts" -le 300 ]] || {
+        echo "ERROR: invalid resource-guard health-check window" >&2
+        return 1
+    }
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
         if service_active; then
             ((++consecutive))
-            ((consecutive >= 5)) && return 0
+            ((consecutive >= required)) && return 0
         else
             consecutive=0
         fi

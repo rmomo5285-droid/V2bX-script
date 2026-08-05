@@ -34,6 +34,8 @@ run_guard() {
     V2BX_RESOURCE_ROOT="$root" \
     V2BX_RESOURCE_SYSTEMCTL_CMD="$temp_dir/bin/systemctl" \
     V2BX_RESOURCE_SKIP_ROOT_CHECK=1 \
+    V2BX_RESOURCE_HEALTH_CONSECUTIVE=1 \
+    V2BX_RESOURCE_HEALTH_ATTEMPTS=1 \
         bash "$script" "$@"
 }
 
@@ -46,8 +48,8 @@ set -e
 apply_output=$(run_guard apply)
 [[ "$apply_output" == *"APPLIED"* ]]
 dropin="$root/etc/systemd/system/V2bX.service.d/20-resource-guard.conf"
-grep -Fxq 'MemoryHigh=400M' "$dropin"
-grep -Fxq 'MemoryMax=550M' "$dropin"
+grep -Fxq 'MemoryHigh=456M' "$dropin"
+grep -Fxq 'MemoryMax=684M' "$dropin"
 grep -Fxq 'OOMPolicy=stop' "$dropin"
 
 run_guard check | grep -Fq 'OK: resource guard already matches'
