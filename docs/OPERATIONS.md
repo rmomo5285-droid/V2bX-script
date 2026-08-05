@@ -2,9 +2,13 @@
 
 ## 发布状态与边界
 
-本文对应核心分支 `fix/xboard-hy2-abuse-hardening` 和部署分支
-`feat/hardened-v2bx-deployment`。二者在正式 Tag/Release、Linux 资产独立校验和
-五节点灰度完成前都是发布候选，不得直接扩展到生产节点。
+当前稳定组合为部署脚本 `v0.1.1` 与核心 `v0.1.0`。正式 Release 和 Linux 核心
+资产已经验收；扩大到生产节点前仍需完成五节点真实灰度。
+
+部署脚本 `v0.1.1` 能识别早期修复脚本生成的完整
+`codex-bilibili-cn-exception` 块。只有标记、位置和全部规则完全一致时，才会连同
+旧 `direct(geosite:google)`、`reject(geosite:cn)` 和 `reject(geoip:cn)` 一起删除；
+任何自定义、重复、部分或损坏的 ACL 都会在停服前被拒绝。
 
 迁移保留 `/etc/V2bX`、全部已配置核心与节点以及自定义路由。仅补充缺失的加固
 默认值；已有 `AbuseGuardConfig` 字段优先。网络调优与低内存保护是迁移之后的
@@ -52,10 +56,10 @@ sudo ./migrate-to-rmomo-v2bx.sh check
 严格 JSON、服务管理器不受支持、旧 Hy2 ACL 被自定义或部分损坏，应先人工处理，
 不得绕过。
 
-灰度时固定核心版本和部署脚本版本，不使用漂移的分支名：
+灰度时分别固定核心版本和部署脚本版本，不使用漂移的分支名：
 
 ```bash
-sudo env V2BX_SCRIPT_REF=vX.Y.Z ./migrate-to-rmomo-v2bx.sh apply --version vX.Y.Z
+sudo env V2BX_SCRIPT_REF=v0.1.1 ./migrate-to-rmomo-v2bx.sh apply --version v0.1.0
 ```
 
 迁移会在旧服务仍运行时完成下载、核心归档摘要、组件摘要、shell 语法、配置和

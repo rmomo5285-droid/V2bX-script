@@ -100,6 +100,53 @@ line_of_exact() {
     ' "$config_path"
 }
 
+count_pattern() {
+    local pattern="$1"
+    grep -Ec "$pattern" "$config_path" || true
+}
+
+line_of_pattern() {
+    local pattern="$1"
+    grep -En "$pattern" "$config_path" | head -n1 | cut -d: -f1
+}
+
+managed_begin_pattern='^[[:space:]]*#[[:space:]]*codex-bilibili-cn-exception-begin[[:space:]]*$'
+managed_end_pattern='^[[:space:]]*#[[:space:]]*codex-bilibili-cn-exception-end[[:space:]]*$'
+managed_rules=(
+    'direct(suffix:acg.tv)'
+    'direct(suffix:acgvideo.com)'
+    'direct(suffix:b23.tv)'
+    'direct(suffix:bili22.cn)'
+    'direct(suffix:bili2233.cn)'
+    'direct(suffix:bili23.cn)'
+    'direct(suffix:bili33.cn)'
+    'direct(suffix:biliapi.com)'
+    'direct(suffix:biliapi.net)'
+    'direct(suffix:bilibili.cc)'
+    'direct(suffix:bilibili.cn)'
+    'direct(suffix:bilibili.com)'
+    'direct(suffix:bilibili.net)'
+    'direct(suffix:bilibili.tv)'
+    'direct(suffix:bilicdn1.com)'
+    'direct(suffix:bilicdn2.com)'
+    'direct(suffix:bilicdn3.com)'
+    'direct(suffix:bilicdn4.com)'
+    'direct(suffix:bilicdn5.com)'
+    'direct(suffix:biliimg.com)'
+    'direct(suffix:biliintl.com)'
+    'direct(suffix:bilivideo.cn)'
+    'direct(suffix:bilivideo.com)'
+    'direct(suffix:bilivideo.net)'
+    'direct(suffix:bstarstatic.com)'
+    'direct(suffix:bstarstatic.net)'
+    'direct(suffix:hdslb.com)'
+    'direct(suffix:hdslb.org)'
+    'direct(p-bstarstatic.akamaized.net)'
+    'direct(upos-bstar-mirrorakam.akamaized.net)'
+    'direct(upos-bstar1-mirrorakam.akamaized.net)'
+    'direct(upos-hz-mirrorakam.akamaized.net)'
+)
+
 google_count=$(count_exact 'direct(geosite:google)')
 geosite_count=$(count_exact 'reject(geosite:cn)')
 geoip_count=$(count_exact 'reject(geoip:cn)')
@@ -116,8 +163,43 @@ fi
 google_line=$(line_of_exact 'direct(geosite:google)')
 geosite_line=$(line_of_exact 'reject(geosite:cn)')
 geoip_line=$(line_of_exact 'reject(geoip:cn)')
-if ((geosite_line != google_line + 1 || geoip_line != geosite_line + 1)); then
-    echo "ERROR: legacy ACL rules are not the exact consecutive installer block; no change made" >&2
+managed_begin_count=$(count_pattern "$managed_begin_pattern")
+managed_end_count=$(count_pattern "$managed_end_pattern")
+managed_layout=0
+if ((geosite_line == google_line + 1 && geoip_line == geosite_line + 1)); then
+    if ((managed_begin_count != 0 || managed_end_count != 0)); then
+        echo "ERROR: legacy ACL contains orphaned managed Bilibili markers; no change made" >&2
+        exit 1
+    fi
+elif ((managed_begin_count == 1 && managed_end_count == 1)); then
+    managed_begin_line=$(line_of_pattern "$managed_begin_pattern")
+    managed_end_line=$(line_of_pattern "$managed_end_pattern")
+    if ((managed_begin_line != google_line + 1 || geosite_line != managed_end_line + 1 || geoip_line != geosite_line + 1)); then
+        echo "ERROR: managed Bilibili compatibility block is not in the known legacy position; no change made" >&2
+        exit 1
+    fi
+    mapfile -t actual_managed_rules < <(awk -v first="$managed_begin_line" -v last="$managed_end_line" '
+        NR > first && NR < last {
+            line = $0
+            sub(/\r$/, "", line)
+            sub(/^[ \t]*-[ \t]*/, "", line)
+            sub(/[ \t]+(#.*)?$/, "", line)
+            print line
+        }
+    ' "$config_path")
+    if ((${#actual_managed_rules[@]} != ${#managed_rules[@]})); then
+        echo "ERROR: managed Bilibili compatibility block has an unexpected rule count; no change made" >&2
+        exit 1
+    fi
+    for index in "${!managed_rules[@]}"; do
+        if [[ "${actual_managed_rules[$index]}" != "${managed_rules[$index]}" ]]; then
+            echo "ERROR: managed Bilibili compatibility block differs at rule $((index + 1)); no change made" >&2
+            exit 1
+        fi
+    done
+    managed_layout=1
+else
+    echo "ERROR: legacy ACL rules are not the exact installer block or known managed Bilibili layout; no change made" >&2
     exit 1
 fi
 
@@ -151,7 +233,11 @@ inline_line=$(awk -v start="$acl_line" -v end="$google_line" '
 [[ -n "$inline_line" ]] || { echo "ERROR: rule block is not inside acl.inline" >&2; exit 1; }
 
 if [[ "$mode" == "check" ]]; then
-    echo "NEEDS APPLY: exact legacy native-Hysteria2 China ACL found at lines $google_line-$geoip_line"
+    if ((managed_layout)); then
+        echo "NEEDS APPLY: exact managed Bilibili compatibility ACL found at lines $google_line-$geoip_line"
+    else
+        echo "NEEDS APPLY: exact legacy native-Hysteria2 China ACL found at lines $google_line-$geoip_line"
+    fi
     exit 3
 fi
 
@@ -192,8 +278,8 @@ render_path=$(mktemp "$config_dir/.hy2config.render.XXXXXX")
 # Remove the exact generated rules. If the ACL section contains nothing else,
 # remove the now-empty acl section too; customized ACL entries are preserved.
 other_acl_content=$(awk -v start="$acl_line" -v end="$section_end" \
-    -v google="$google_line" -v geosite="$geosite_line" -v geoip="$geoip_line" '
-    NR > start && NR < end && NR != google && NR != geosite && NR != geoip {
+    -v first="$google_line" -v last="$geoip_line" '
+    NR > start && NR < end && (NR < first || NR > last) {
         line = $0
         sub(/\r$/, "", line)
         if (line ~ /^[ \t]*$/ || line ~ /^[ \t]*#/ || line ~ /^[ \t]+inline:[ \t]*(#.*)?$/) next

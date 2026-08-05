@@ -11,7 +11,7 @@ skip_resource_guard=0
 
 core_repo="${V2BX_CORE_REPO:-rmomo5285-droid/V2bX}"
 script_repo="${V2BX_SCRIPT_REPO:-rmomo5285-droid/V2bX-script}"
-script_ref="${V2BX_SCRIPT_REF:-v0.1.0}"
+script_ref="${V2BX_SCRIPT_REF:-v0.1.1}"
 root_dir="${V2BX_MIGRATE_ROOT:-/}"
 service_name="${V2BX_SERVICE_NAME:-V2bX}"
 

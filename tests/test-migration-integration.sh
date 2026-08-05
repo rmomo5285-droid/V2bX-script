@@ -129,6 +129,49 @@ EOF
   }]
 }
 EOF
+    cat > "$root/etc/V2bX/hy2config.yaml" <<'EOF'
+acl:
+  inline:
+    - direct(geosite:google)
+    # codex-bilibili-cn-exception-begin
+    - direct(suffix:acg.tv)
+    - direct(suffix:acgvideo.com)
+    - direct(suffix:b23.tv)
+    - direct(suffix:bili22.cn)
+    - direct(suffix:bili2233.cn)
+    - direct(suffix:bili23.cn)
+    - direct(suffix:bili33.cn)
+    - direct(suffix:biliapi.com)
+    - direct(suffix:biliapi.net)
+    - direct(suffix:bilibili.cc)
+    - direct(suffix:bilibili.cn)
+    - direct(suffix:bilibili.com)
+    - direct(suffix:bilibili.net)
+    - direct(suffix:bilibili.tv)
+    - direct(suffix:bilicdn1.com)
+    - direct(suffix:bilicdn2.com)
+    - direct(suffix:bilicdn3.com)
+    - direct(suffix:bilicdn4.com)
+    - direct(suffix:bilicdn5.com)
+    - direct(suffix:biliimg.com)
+    - direct(suffix:biliintl.com)
+    - direct(suffix:bilivideo.cn)
+    - direct(suffix:bilivideo.com)
+    - direct(suffix:bilivideo.net)
+    - direct(suffix:bstarstatic.com)
+    - direct(suffix:bstarstatic.net)
+    - direct(suffix:hdslb.com)
+    - direct(suffix:hdslb.org)
+    - direct(p-bstarstatic.akamaized.net)
+    - direct(upos-bstar-mirrorakam.akamaized.net)
+    - direct(upos-bstar1-mirrorakam.akamaized.net)
+    - direct(upos-hz-mirrorakam.akamaized.net)
+    # codex-bilibili-cn-exception-end
+    - reject(geosite:cn)
+    - reject(geoip:cn)
+masquerade:
+  type: 404
+EOF
     printf 'old-manager\n' > "$root/usr/bin/V2bX"
     printf 'old-service\n' > "$root/etc/systemd/system/V2bX.service"
 }
@@ -140,7 +183,7 @@ run_migration() {
     SERVICE_STATE="$service_state" MIGRATE_ROOT="$root" FAKE_FAIL_NEW="$fail_new" \
     V2BX_MIGRATE_ROOT="$root" V2BX_MIGRATE_SKIP_ROOT_CHECK=1 \
     V2BX_SCRIPT_REF=v1.2.3 bash "$migrator" apply --version v1.2.3 \
-        --skip-network-tune --skip-resource-guard --skip-hy2-fix
+        --skip-network-tune --skip-resource-guard
 }
 
 # Successful switch: everything is staged before stop, then explicit rollback restores it.
@@ -149,11 +192,16 @@ success_events="$temp_dir/success-events"
 success_state="$temp_dir/success-state"
 create_root "$success_root"
 cp -a "$success_root/etc/V2bX/config.json" "$temp_dir/success-config.before"
+cp -a "$success_root/etc/V2bX/hy2config.yaml" "$temp_dir/success-hy2.before"
 cp -a "$success_root/usr/bin/V2bX" "$temp_dir/success-manager.before"
 cp -a "$success_root/etc/systemd/system/V2bX.service" "$temp_dir/success-service.before"
 printf 'active\n' > "$success_state"
 : > "$success_events"
-run_migration "$success_root" "$success_events" "$success_state" 0 > "$temp_dir/success.log" 2>&1
+if ! run_migration "$success_root" "$success_events" "$success_state" 0 > "$temp_dir/success.log" 2>&1; then
+    cat "$temp_dir/success.log" >&2
+    cat "$success_events" >&2
+    fail "successful migration fixture exited nonzero"
+fi
 
 grep -q 'NEW_V2BX_FIXTURE' "$success_root/usr/local/V2bX/V2bX" || fail "new binary was not installed"
 jq -e '
@@ -163,6 +211,9 @@ jq -e '
     and .Nodes[0].LimitConfig.AbuseGuardConfig.Enable == true
     and .Nodes[0].LimitConfig.AbuseGuardConfig.BlockSeconds == 42
 ' "$success_root/etc/V2bX/config.json" >/dev/null || fail "config merge did not preserve custom values"
+! grep -q 'codex-bilibili\|geosite:cn\|geoip:cn\|direct(geosite:google)' \
+    "$success_root/etc/V2bX/hy2config.yaml" || fail "managed legacy Hy2 ACL was not removed during migration"
+grep -q '^masquerade:' "$success_root/etc/V2bX/hy2config.yaml" || fail "migration removed the following Hy2 section"
 [[ -s "$success_root/var/lib/v2bx-migrate/latest" ]] || fail "successful migration did not record latest backup"
 [[ "$(<"$success_state")" == "active" ]] || fail "successful migration did not leave service active"
 last_curl=$(grep -n '^curl ' "$success_events" | tail -n1 | cut -d: -f1)
@@ -175,6 +226,7 @@ MIGRATE_ROOT="$success_root" V2BX_MIGRATE_ROOT="$success_root" \
 V2BX_MIGRATE_SKIP_ROOT_CHECK=1 bash "$migrator" rollback > "$temp_dir/rollback.log" 2>&1
 grep -q 'OLD_V2BX_FIXTURE' "$success_root/usr/local/V2bX/V2bX" || fail "explicit rollback did not restore binary"
 cmp -s "$temp_dir/success-config.before" "$success_root/etc/V2bX/config.json" || fail "explicit rollback changed original config"
+cmp -s "$temp_dir/success-hy2.before" "$success_root/etc/V2bX/hy2config.yaml" || fail "explicit rollback changed original Hy2 config"
 cmp -s "$temp_dir/success-manager.before" "$success_root/usr/bin/V2bX" || fail "explicit rollback did not restore manager"
 cmp -s "$temp_dir/success-service.before" "$success_root/etc/systemd/system/V2bX.service" || fail "explicit rollback did not restore service"
 [[ "$(<"$success_state")" == "active" ]] || fail "explicit rollback did not restore active state"
@@ -186,6 +238,7 @@ failure_events="$temp_dir/failure-events"
 failure_state="$temp_dir/failure-state"
 create_root "$failure_root"
 cp -a "$failure_root/etc/V2bX/config.json" "$temp_dir/failure-config.before"
+cp -a "$failure_root/etc/V2bX/hy2config.yaml" "$temp_dir/failure-hy2.before"
 cp -a "$failure_root/usr/bin/V2bX" "$temp_dir/failure-manager.before"
 printf 'active\n' > "$failure_state"
 : > "$failure_events"
@@ -197,6 +250,7 @@ set -e
 grep -q 'restoring the previous V2bX' "$temp_dir/failure.log" || fail "automatic rollback was not reported"
 grep -q 'OLD_V2BX_FIXTURE' "$failure_root/usr/local/V2bX/V2bX" || fail "automatic rollback did not restore binary"
 cmp -s "$temp_dir/failure-config.before" "$failure_root/etc/V2bX/config.json" || fail "automatic rollback changed original config"
+cmp -s "$temp_dir/failure-hy2.before" "$failure_root/etc/V2bX/hy2config.yaml" || fail "automatic rollback changed original Hy2 config"
 cmp -s "$temp_dir/failure-manager.before" "$failure_root/usr/bin/V2bX" || fail "automatic rollback did not restore manager"
 [[ "$(<"$failure_state")" == "active" ]] || fail "automatic rollback did not restore active state"
 [[ ! -e "$failure_root/var/lib/v2bx-migrate/latest" ]] || fail "failed migration was recorded as latest"

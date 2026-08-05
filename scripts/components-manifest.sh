@@ -16,7 +16,11 @@ components=(
 )
 
 generate() {
-    (cd "$repo_dir" && sha256sum "${components[@]}")
+    local component digest
+    for component in "${components[@]}"; do
+        digest=$(sha256sum "$repo_dir/$component" | awk '{print $1}')
+        printf '%s  %s\n' "$digest" "$component"
+    done
 }
 
 case "$mode" in

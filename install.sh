@@ -124,7 +124,7 @@ check_status() {
 }
 
 install_V2bX_safe() {
-    local requested_version="${1:-}" script_ref="${V2BX_SCRIPT_REF:-v0.1.0}"
+    local requested_version="${1:-}" script_ref="${V2BX_SCRIPT_REF:-v0.1.1}"
     local script_base="https://raw.githubusercontent.com/rmomo5285-droid/V2bX-script/${script_ref}"
     local migration migration_manifest temp_dir release_tag asset archive checksum expected actual helper name manifest
 
