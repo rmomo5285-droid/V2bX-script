@@ -34,6 +34,10 @@ cat > "$tmp_dir/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
+cat > "$tmp_dir/bin/journalctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'startup-certificate-error config-nodes=%s dummy-private-key\n' "$(jq '.Nodes | length' "$V2BX_CONFIG_PATH")"
+EOF
 chmod +x "$tmp_dir/bin/"*
 export V2BX_APPEND_NONINTERACTIVE=1 V2BX_TEMPLATE_INDEX=1 V2BX_NODE_ID=202 V2BX_RESTART=0
 export V2BX_DOMAIN=hy2.example.com V2BX_EMAIL=admin@example.com
@@ -129,6 +133,11 @@ for state in fail-restart dies stopped; do
     export V2BX_RESTART=1 TEST_SERVICE="$state"
     if run_append; then fail "service $state accepted"; fi
     unchanged
+    if [[ "$state" != stopped ]]; then
+        grep -q '诊断已保存' "$tmp_dir/output" || fail 'startup diagnostics missing'
+        ! grep -q dummy-private-key "$tmp_dir/output" || fail 'diagnostic output leaked credentials'
+        grep -l 'startup-certificate-error config-nodes=2' "$V2BX_CONFIG_PATH".add-node-failure.* >/dev/null || fail 'startup diagnostics captured after rollback'
+    fi
 done
 reset_config
 export V2BX_RESTART=1

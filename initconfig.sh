@@ -242,7 +242,7 @@ append_node_config() (
     umask 077
     local config_path="${1:-/etc/V2bX/config.json}"
     local template_index="${V2BX_TEMPLATE_INDEX:-}" new_id="${V2BX_NODE_ID:-}" answer work_dir="" lock_dir backup=""
-    local original_hash candidate_hash committed=false restart_attempted=false backend
+    local original_hash candidate_hash committed=false restart_attempted=false backend restart_since="" failure_reason=""
     local mode="${2:-}" domain="${V2BX_DOMAIN:-}" port80="" email="${V2BX_EMAIL:-}" identity_type label
     local unattended="${V2BX_APPEND_NONINTERACTIVE:-0}" restart="${V2BX_RESTART:-0}"
     [[ "$unattended" == 0 || "$unattended" == 1 ]] || { echo "错误：V2BX_APPEND_NONINTERACTIVE 必须为 0 或 1。" >&2; exit 2; }
@@ -261,23 +261,41 @@ append_node_config() (
     }
     append_service() {
         if [[ "$backend" == openrc ]]; then
-            service V2bX "$1" >/dev/null 2>&1
+            service V2bX "$1"
         elif [[ "$1" == status ]]; then
             systemctl is-active --quiet V2bX
         else
-            systemctl "$1" V2bX >/dev/null 2>&1
+            systemctl "$1" V2bX
         fi
     }
     append_cleanup() {
         local result=$? restore_stage
         trap - EXIT HUP INT TERM
+        if [[ "$committed" == true && "$result" != 0 && "$restart_attempted" == true ]]; then
+            # Capture the failed startup before rollback replaces its evidence.
+            # Keep raw diagnostics private; they may contain panel credentials.
+            local diagnostic
+            diagnostic=$(mktemp "${config_path}.add-node-failure.$(date +%Y%m%d-%H%M%S).XXXXXX") || diagnostic=""
+            if [[ -n "$diagnostic" ]]; then
+                {
+                    printf '%s\n' "${failure_reason:-追加过程中收到中断或发生错误。}"
+                    cat "$work_dir/service.log" 2>/dev/null || true
+                    if [[ "$backend" == systemd ]]; then
+                        systemctl status V2bX --no-pager -l 2>&1 || true
+                        journalctl -u V2bX --since "@$restart_since" -n 150 --no-pager 2>&1 || true
+                    fi
+                } > "$diagnostic"
+                echo "${failure_reason:-追加过程中收到中断或发生错误。}" >&2
+                echo "回滚前的诊断已保存（可能含凭据，请勿原样公开）：$diagnostic" >&2
+            fi
+        fi
         if [[ "$committed" == true && "$result" != 0 ]]; then
             if [[ ! -L "$config_path" && "$(sha256sum "$config_path" | awk '{print $1}')" == "$candidate_hash" ]]; then
                 restore_stage=$(mktemp "${config_path}.restore.XXXXXX")
                 if cp -p -- "$work_dir/original.json" "$restore_stage" && mv -f -- "$restore_stage" "$config_path"; then
                     echo "追加失败，已恢复原配置。" >&2
                     if [[ "$restart_attempted" == true ]]; then
-                        append_service restart || echo "错误：原服务恢复失败，请检查服务日志。" >&2
+                        append_service restart > "$work_dir/restore.log" 2>&1 || echo "错误：原服务恢复失败，请检查服务日志。" >&2
                     fi
                 else
                     rm -f -- "$restore_stage"
@@ -395,7 +413,7 @@ append_node_config() (
     backend=systemd
     [[ ! -f /etc/alpine-release ]] || backend=openrc
     if [[ "$restart" == 1 ]]; then
-        append_service status || { echo "错误：服务未运行；请先修复服务，或选择仅保存。" >&2; exit 1; }
+        append_service status >/dev/null 2>&1 || { echo "错误：服务未运行；请先修复服务，或选择仅保存。" >&2; exit 1; }
     fi
     [[ ! -L "$config_path" && "$(sha256sum "$config_path" | awk '{print $1}')" == "$original_hash" ]] || {
         echo "错误：配置在操作期间已变化，追加已取消。" >&2; exit 1;
@@ -406,11 +424,18 @@ append_node_config() (
     committed=true
     mv -f -- "$work_dir/staged.json" "$config_path" || exit 1
     if [[ "$restart" == 1 ]]; then
+        restart_since=$(date +%s)
         restart_attempted=true
-        append_service restart || exit 1
+        append_service restart > "$work_dir/service.log" 2>&1 || {
+            failure_reason="错误：V2bX 重启命令失败。"
+            exit 1
+        }
         for _ in 1 2 3 4 5; do
             sleep 1
-            append_service status || exit 1
+            append_service status >> "$work_dir/service.log" 2>&1 || {
+                failure_reason="错误：重启后第 ${_} 秒，V2bX 服务未处于运行状态。"
+                exit 1
+            }
         done
         echo "节点已追加，服务连续5秒存活；请在客户端验证新旧节点。"
     else
