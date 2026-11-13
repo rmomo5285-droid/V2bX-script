@@ -42,6 +42,7 @@ chmod +x "$tmp_dir/bin/"*
 export V2BX_APPEND_NONINTERACTIVE=1 V2BX_TEMPLATE_INDEX=1 V2BX_NODE_ID=202 V2BX_RESTART=0
 export V2BX_DOMAIN=hy2.example.com V2BX_EMAIL=admin@example.com
 export V2BX_CONFIG_PATH="$tmp_dir/config.json" TEST_RESTART_LOG="$tmp_dir/restarts"
+export V2BX_LOG_DIR="$tmp_dir/new-logs/V2bX"
 
 reset_config() {
     unset TEST_SS TEST_SERVICE
@@ -73,6 +74,8 @@ if run_append; then fail 'duplicate accepted'; fi
 reset_config
 run_append --hy2-http || { cat "$tmp_dir/output"; fail hy2; }
 preserved
+[[ -d "$V2BX_LOG_DIR" ]] || fail 'missing log directory was not created'
+jq -e --arg output "$V2BX_LOG_DIR/hy2.log" '.Cores[1].Log.Output == $output' "$V2BX_CONFIG_PATH" >/dev/null || fail 'wrong log sink'
 jq -e '.Cores | length == 2 and .[1].Name == "hy2-append-202"' "$V2BX_CONFIG_PATH" >/dev/null
 jq -e '.Nodes[1] | .ApiConfig.NodeType == "hysteria2" and .ApiConfig.NodeID == 202
   and .ApiConfig.ApiKey == "dummy-private-key" and .ApiConfig.ApiProtocol == "uniproxy"
@@ -81,6 +84,10 @@ jq -e '.Nodes[1] | .ApiConfig.NodeType == "hysteria2" and .ApiConfig.NodeID == 2
   and .Options.CertConfig.CertFile == "/etc/V2bX/certs/hy2-append-202/fullchain.cer"
   and (.Options | has("Flow") or has("XrayOptions") or has("Hysteria2ConfigPath") | not)' "$V2BX_CONFIG_PATH" >/dev/null
 if run_append --hy2-http; then fail 'duplicate Hy2 accepted'; fi
+
+reset_config
+if V2BX_LOG_DIR="$tmp_dir/original.json/logs" run_append --hy2-http; then fail 'uncreatable log directory accepted'; fi
+unchanged
 
 reset_config
 jq '.Nodes |= map({ApiConfig:{ApiHost:.ApiHost,ApiKey:.ApiKey,NodeID:.NodeID,NodeType:.NodeType},Options:{Core:.Core,CoreName:.CoreName,Flow:.Flow}})' "$tmp_dir/original.json" > "$V2BX_CONFIG_PATH"

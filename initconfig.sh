@@ -245,6 +245,7 @@ append_node_config() (
     local original_hash candidate_hash committed=false restart_attempted=false backend restart_since="" failure_reason=""
     local mode="${2:-}" domain="${V2BX_DOMAIN:-}" port80="" email="${V2BX_EMAIL:-}" identity_type label
     local unattended="${V2BX_APPEND_NONINTERACTIVE:-0}" restart="${V2BX_RESTART:-0}"
+    local log_dir="${V2BX_LOG_DIR:-/var/log/V2bX}"
     [[ "$unattended" == 0 || "$unattended" == 1 ]] || { echo "错误：V2BX_APPEND_NONINTERACTIVE 必须为 0 或 1。" >&2; exit 2; }
     if [[ "$unattended" == 1 ]]; then
         [[ -n "$mode" && -n "$template_index" && -n "$new_id" ]] || { echo "错误：非交互追加需要方式、V2BX_TEMPLATE_INDEX 和 V2BX_NODE_ID。" >&2; exit 2; }
@@ -350,6 +351,7 @@ append_node_config() (
     identity_type=$(jq -r --argjson i "$template_index" '.Nodes[$i] | .NodeType // .ApiConfig.NodeType' "$work_dir/original.json")
     if [[ "$mode" == hy2-http ]]; then
         identity_type=hysteria2
+        [[ "$log_dir" == /* ]] || { echo "错误：V2BX_LOG_DIR 必须是绝对路径。" >&2; exit 1; }
         if [[ "$unattended" == 0 ]]; then read -rp "Hy2 证书域名（须已解析到本机）：" domain || exit 1; fi
         domain="${domain,,}"
         [[ ${#domain} -le 253 && "$domain" == *.* && "$domain" != *..* && "$domain" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || {
@@ -370,7 +372,7 @@ append_node_config() (
         echo "请在面板的新 Hy2 节点中设置该域名和 UDP 服务端端口，并放行 UDP 入站及 TCP 80。"
     fi
     jq --argjson i "$template_index" --argjson id "$new_id" --arg kind "$identity_type" \
-        --arg mode "$mode" --arg domain "$domain" --arg email "$email" '
+        --arg mode "$mode" --arg domain "$domain" --arg email "$email" --arg log_dir "$log_dir" '
         def api: .ApiConfig // .;
         .Nodes[$i] as $template | ($template | api) as $api |
         if ($api.ApiHost | type) != "string" or ($api.ApiHost | length) == 0
@@ -384,7 +386,7 @@ append_node_config() (
             # A dedicated core avoids inheriting any existing Hy2 ACL/YAML.
             ("hy2-append-" + ($id|tostring)) as $name |
             if any(.Cores[]; (.Name // .Type) == $name) then error("duplicate core") else
-                .Cores += [{Type:"hysteria2", Name:$name, Log:{Level:"warn",Output:"/var/log/V2bX/hy2.log"}}] |
+                .Cores += [{Type:"hysteria2", Name:$name, Log:{Level:"warn",Output:($log_dir+"/hy2.log")}}] |
                 .Nodes += [{
                     ApiConfig: ($api | {ApiHost,ApiKey,ApiSendIP,Timeout,MachineID,ApiProtocol,RuleListPath} |
                         with_entries(select(.value != null)) | .NodeID=$id | .NodeType="hysteria2"),
@@ -418,6 +420,11 @@ append_node_config() (
     [[ ! -L "$config_path" && "$(sha256sum "$config_path" | awk '{print $1}')" == "$original_hash" ]] || {
         echo "错误：配置在操作期间已变化，追加已取消。" >&2; exit 1;
     }
+    if [[ "$mode" == hy2-http ]]; then
+        # Native Hy2 opens its log sink before starting nodes. Existing Xray-only
+        # installations may never have created this directory.
+        (umask 022; mkdir -p -- "$log_dir") || { echo "错误：无法创建 Hy2 日志目录，原配置未修改。" >&2; exit 1; }
+    fi
     backup=$(mktemp "${config_path}.before-add-node.$(date +%Y%m%d-%H%M%S).XXXXXX") || exit 1
     cat "$work_dir/original.json" > "$backup" || exit 1
     # Set before rename so signal/error cleanup covers the commit boundary.
