@@ -235,6 +235,190 @@ EOF
     nodes_config+=("$node_config")
 }
 
+# Append clones an existing node or reuses its panel credentials for a new Hy2.
+# Never invoke the destructive generator here.
+append_node_config() (
+    set -Eeuo pipefail
+    umask 077
+    local config_path="${1:-/etc/V2bX/config.json}"
+    local template_index="${V2BX_TEMPLATE_INDEX:-}" new_id="${V2BX_NODE_ID:-}" answer work_dir="" lock_dir backup=""
+    local original_hash candidate_hash committed=false restart_attempted=false backend
+    local mode="${2:-}" domain="${V2BX_DOMAIN:-}" port80="" email="${V2BX_EMAIL:-}" identity_type label
+    local unattended="${V2BX_APPEND_NONINTERACTIVE:-0}" restart="${V2BX_RESTART:-0}"
+    [[ "$unattended" == 0 || "$unattended" == 1 ]] || { echo "错误：V2BX_APPEND_NONINTERACTIVE 必须为 0 或 1。" >&2; exit 2; }
+    if [[ "$unattended" == 1 ]]; then
+        [[ -n "$mode" && -n "$template_index" && -n "$new_id" ]] || { echo "错误：非交互追加需要方式、V2BX_TEMPLATE_INDEX 和 V2BX_NODE_ID。" >&2; exit 2; }
+        [[ "$restart" == 0 || "$restart" == 1 ]] || { echo "错误：V2BX_RESTART 必须为 0 或 1。" >&2; exit 2; }
+    fi
+    command -v jq >/dev/null || { echo "错误：需要先安装 jq。" >&2; exit 1; }
+    [[ -f "$config_path" && ! -L "$config_path" ]] || {
+        echo "错误：需要已有的普通 config.json 文件。" >&2; exit 1;
+    }
+    config_path="$(cd -- "$(dirname -- "$config_path")" && pwd)/$(basename -- "$config_path")"
+    lock_dir="${config_path}.append.lock"
+    mkdir -- "$lock_dir" 2>/dev/null || {
+        echo "错误：已有追加操作，或遗留锁目录：$lock_dir" >&2; exit 1;
+    }
+    append_service() {
+        if [[ "$backend" == openrc ]]; then
+            service V2bX "$1" >/dev/null 2>&1
+        elif [[ "$1" == status ]]; then
+            systemctl is-active --quiet V2bX
+        else
+            systemctl "$1" V2bX >/dev/null 2>&1
+        fi
+    }
+    append_cleanup() {
+        local result=$? restore_stage
+        trap - EXIT HUP INT TERM
+        if [[ "$committed" == true && "$result" != 0 ]]; then
+            if [[ ! -L "$config_path" && "$(sha256sum "$config_path" | awk '{print $1}')" == "$candidate_hash" ]]; then
+                restore_stage=$(mktemp "${config_path}.restore.XXXXXX")
+                if cp -p -- "$work_dir/original.json" "$restore_stage" && mv -f -- "$restore_stage" "$config_path"; then
+                    echo "追加失败，已恢复原配置。" >&2
+                    if [[ "$restart_attempted" == true ]]; then
+                        append_service restart || echo "错误：原服务恢复失败，请检查服务日志。" >&2
+                    fi
+                else
+                    rm -f -- "$restore_stage"
+                    echo "错误：自动恢复失败，请从备份恢复：$backup" >&2
+                fi
+            else
+                echo "错误：配置已被其他操作修改，未覆盖；原配置备份：$backup" >&2
+            fi
+        fi
+        [[ -z "$work_dir" ]] || rm -rf -- "$work_dir"
+        rmdir -- "$lock_dir"
+        exit "$result"
+    }
+    trap append_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' HUP TERM
+    work_dir=$(mktemp -d "$(dirname -- "$config_path")/.append-node.XXXXXX") || exit 1
+    cp -p -- "$config_path" "$work_dir/original.json" || exit 1
+    original_hash=$(sha256sum "$work_dir/original.json" | awk '{print $1}') || exit 1
+    # jq must never print parsing errors containing credentials. Includes cannot
+    # be checked for duplicate panel identities without resolving external data.
+    jq -e 'type == "object" and (.Nodes | type == "array" and length > 0)
+        and (.Cores | type == "array" and length > 0)
+        and all(.Nodes[]; type == "object" and (has("Include") | not))' \
+        "$work_dir/original.json" >/dev/null 2>&1 || {
+        echo "错误：追加需要严格 JSON 和内联 Nodes；JSON5/Include 配置保持原样，请先人工处理。" >&2; exit 1;
+    }
+    if [[ -z "$mode" ]]; then
+        read -rp "追加方式：1) 复制已有节点 2) 新增 Hy2（HTTP证书）[1]：" mode || exit 1
+        mode="${mode:-1}"
+    fi
+    case "$mode" in
+        1|clone) mode=clone ;;
+        2|--hy2-http) mode=hy2-http ;;
+        *) echo "错误：追加方式无效。" >&2; exit 1 ;;
+    esac
+    if [[ "$unattended" == 0 ]]; then
+      echo "选择已有节点以复用面板信息（不会显示 API Key）。"
+      jq -r '.Nodes | to_entries[] | .key as $i | .value |
+        "\($i + 1)) \(.Core // .Options.Core // .CoreName // .Options.CoreName // "auto") / \(.NodeType // .ApiConfig.NodeType) / NodeID=\(.NodeID // .ApiConfig.NodeID)"' "$work_dir/original.json"
+      read -rp "选择要复制的节点序号（不是 NodeID）：" template_index || exit 1
+    fi
+    [[ "$template_index" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "错误：节点序号无效。" >&2; exit 1; }
+    template_index=$((10#$template_index - 1))
+    jq -e --argjson i "$template_index" '.Nodes[$i] | type == "object"' "$work_dir/original.json" >/dev/null || {
+        echo "错误：节点序号不存在。" >&2; exit 1;
+    }
+    echo "请先在面板新建对应协议的节点；同 IP、同传输层使用不同服务端端口。"
+    echo "服务端端口由面板的新节点提供；VLESS TCP 与 Hy2 UDP 可以使用相同端口号。"
+    if [[ "$unattended" == 0 ]]; then read -rp "请输入新节点 NodeID：" new_id || exit 1; fi
+    [[ "$new_id" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "错误：NodeID 必须是正整数（最多9位）。" >&2; exit 1; }
+    identity_type=$(jq -r --argjson i "$template_index" '.Nodes[$i] | .NodeType // .ApiConfig.NodeType' "$work_dir/original.json")
+    if [[ "$mode" == hy2-http ]]; then
+        identity_type=hysteria2
+        if [[ "$unattended" == 0 ]]; then read -rp "Hy2 证书域名（须已解析到本机）：" domain || exit 1; fi
+        domain="${domain,,}"
+        [[ ${#domain} -le 253 && "$domain" == *.* && "$domain" != *..* && "$domain" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || {
+            echo "错误：请输入有效域名，不含协议、端口、路径或通配符。" >&2; exit 1;
+        }
+        local -a labels
+        IFS=. read -r -a labels <<< "$domain"
+        for label in "${labels[@]}"; do
+            [[ ${#label} -le 63 && "$label" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || { echo "错误：域名标签无效。" >&2; exit 1; }
+        done
+        if [[ "$unattended" == 0 ]]; then read -rp "ACME 证书联系邮箱：" email || exit 1; fi
+        [[ "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || { echo "错误：邮箱格式无效。" >&2; exit 1; }
+        command -v ss >/dev/null || { echo "错误：请先安装 iproute2（需要 ss 检查 TCP 80）。" >&2; exit 1; }
+        port80=$(ss -H -ltn 'sport = :80') || { echo "错误：无法检查 TCP 80 监听状态。" >&2; exit 1; }
+        [[ -z "$port80" ]] || {
+            echo "错误：TCP 80 已被占用，HTTP证书验证不能启动。请使用 DNS 验证或已有证书；未停止任何服务。" >&2; exit 1;
+        }
+        echo "请在面板的新 Hy2 节点中设置该域名和 UDP 服务端端口，并放行 UDP 入站及 TCP 80。"
+    fi
+    jq --argjson i "$template_index" --argjson id "$new_id" --arg kind "$identity_type" \
+        --arg mode "$mode" --arg domain "$domain" --arg email "$email" '
+        def api: .ApiConfig // .;
+        .Nodes[$i] as $template | ($template | api) as $api |
+        if ($api.ApiHost | type) != "string" or ($api.ApiHost | length) == 0
+            or ($api.ApiKey | type) != "string" or ($api.ApiKey | length) == 0
+            or ($api.NodeType | type) != "string" then
+            error("unsupported template")
+        elif any(.Nodes[]; (api | .NodeID == $id and .NodeType == $kind
+            and (.ApiHost | rtrimstr("/")) == ($api.ApiHost | rtrimstr("/")))) then
+            error("duplicate node")
+        elif $mode == "hy2-http" then
+            # A dedicated core avoids inheriting any existing Hy2 ACL/YAML.
+            ("hy2-append-" + ($id|tostring)) as $name |
+            if any(.Cores[]; (.Name // .Type) == $name) then error("duplicate core") else
+                .Cores += [{Type:"hysteria2", Name:$name, Log:{Level:"warn",Output:"/var/log/V2bX/hy2.log"}}] |
+                .Nodes += [{
+                    ApiConfig: ($api | {ApiHost,ApiKey,ApiSendIP,Timeout,MachineID,ApiProtocol,RuleListPath} |
+                        with_entries(select(.value != null)) | .NodeID=$id | .NodeType="hysteria2"),
+                    Options: {Core:"hysteria2",CoreName:$name,ListenIP:"0.0.0.0",SendIP:"0.0.0.0",
+                        DeviceOnlineMinTraffic:200,ReportMinTraffic:0,
+                        LimitConfig: ($template.Options.LimitConfig // $template.LimitConfig // {}),
+                        CertConfig: {CertMode:"http",CertDomain:$domain,Email:$email,
+                            CertFile:("/etc/V2bX/certs/"+$name+"/fullchain.cer"),
+                            KeyFile:("/etc/V2bX/certs/"+$name+"/cert.key")}}
+                }]
+            end
+        else .Nodes += [($template | if has("ApiConfig") then .ApiConfig.NodeID = $id else .NodeID = $id end)] end
+    ' "$work_dir/original.json" > "$work_dir/candidate.json" 2>/dev/null || {
+        echo "错误：同面板同协议 NodeID 已存在，或模板缺少面板信息。" >&2; exit 1;
+    }
+    # Retain the original config metadata; only the backup is always private.
+    cp -p -- "$work_dir/original.json" "$work_dir/staged.json" || exit 1
+    cat "$work_dir/candidate.json" > "$work_dir/staged.json" || exit 1
+    candidate_hash=$(sha256sum "$work_dir/staged.json" | awk '{print $1}') || exit 1
+    if [[ "$unattended" == 0 ]]; then
+        read -rp "确认追加 NodeID=$new_id？[y/N]：" answer || exit 1
+        [[ "$answer" == y || "$answer" == Y ]] || { echo "已取消，原配置未修改。"; exit 0; }
+        read -rp "保存后立即重启 V2bX？现有连接会短暂中断。[y/N]：" answer || exit 1
+        if [[ "$answer" == y || "$answer" == Y ]]; then restart=1; else restart=0; fi
+    fi
+    backend=systemd
+    [[ ! -f /etc/alpine-release ]] || backend=openrc
+    if [[ "$restart" == 1 ]]; then
+        append_service status || { echo "错误：服务未运行；请先修复服务，或选择仅保存。" >&2; exit 1; }
+    fi
+    [[ ! -L "$config_path" && "$(sha256sum "$config_path" | awk '{print $1}')" == "$original_hash" ]] || {
+        echo "错误：配置在操作期间已变化，追加已取消。" >&2; exit 1;
+    }
+    backup=$(mktemp "${config_path}.before-add-node.$(date +%Y%m%d-%H%M%S).XXXXXX") || exit 1
+    cat "$work_dir/original.json" > "$backup" || exit 1
+    # Set before rename so signal/error cleanup covers the commit boundary.
+    committed=true
+    mv -f -- "$work_dir/staged.json" "$config_path" || exit 1
+    if [[ "$restart" == 1 ]]; then
+        restart_attempted=true
+        append_service restart || exit 1
+        for _ in 1 2 3 4 5; do
+            sleep 1
+            append_service status || exit 1
+        done
+        echo "节点已追加，服务连续5秒存活；请在客户端验证新旧节点。"
+    else
+        echo "节点已保存，尚未重启生效；执行 V2bX restart 后验证新旧节点。"
+    fi
+    echo "原配置备份：$backup"
+)
+
 generate_config_file() {
     echo -e "${yellow}V2bX 配置文件生成向导${plain}"
     echo -e "${red}请阅读以下注意事项：${plain}"
