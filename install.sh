@@ -124,7 +124,7 @@ check_status() {
 }
 
 install_V2bX_safe() {
-    local requested_version="${1:-}" script_ref="${V2BX_SCRIPT_REF:-v0.1.3}"
+    local requested_version="${1:-}" script_ref="${V2BX_SCRIPT_REF:-v0.1.4}"
     local script_base="https://raw.githubusercontent.com/rmomo5285-droid/V2bX-script/${script_ref}"
     local migration migration_manifest temp_dir release_tag asset archive checksum expected actual helper name manifest
 
@@ -225,6 +225,21 @@ install_V2bX_safe() {
         chmod 0755 "$helper"
     done
 
+    # Match the wizard's logging defaults even if the user skips the wizard.
+    if [[ ! -f /etc/V2bX/config.json ]]; then
+        if ! jq -e '
+            if (.Log.Output // "") == "" then
+                .Log.Level = "warn" | .Log.Output = "/var/log/V2bX/v2bx.log"
+            else . end
+            | (.Cores[]? | select(.Type == "sing" and (.Log.Output // "") == "")) |=
+                (.Log.Level = "warn" | .Log.Output = "/var/log/V2bX/sing.log")
+        ' "$temp_dir/unpack/config.json" > "$temp_dir/config.json"; then
+            rm -rf -- "$temp_dir"
+            echo -e "${red}无法应用初始日志配置，未修改安装目录${plain}"
+            return 1
+        fi
+    fi
+
     mkdir -p /usr/local/V2bX /etc/V2bX /usr/local/share/v2bx /var/log/V2bX
     install -m 0755 "$temp_dir/unpack/V2bX" /usr/local/V2bX/.V2bX.new
     mv -f /usr/local/V2bX/.V2bX.new /usr/local/V2bX/V2bX
@@ -237,8 +252,8 @@ install_V2bX_safe() {
             fi
         fi
     done
-    if [[ ! -f /etc/V2bX/config.json ]]; then
-        install -m 0600 "$temp_dir/unpack/config.json" /etc/V2bX/config.json
+    if [[ -f "$temp_dir/config.json" && ! -f /etc/V2bX/config.json ]]; then
+        install -m 0600 "$temp_dir/config.json" /etc/V2bX/config.json
     fi
     install -m 0755 "$temp_dir/scripts/V2bX.sh" /usr/bin/V2bX
     for name in initconfig.sh bbr-kernel.sh network-tune.sh resource-guard.sh fix-legacy-hy2-config.sh migrate-to-rmomo-v2bx.sh; do

@@ -2,7 +2,7 @@
 
 ## 发布状态与边界
 
-当前稳定组合为部署脚本 `v0.1.3` 与核心 `v0.1.1`。正式 Release 和 Linux 核心
+当前稳定组合为部署脚本 `v0.1.4` 与核心 `v0.1.1`。正式 Release 和 Linux 核心
 资产已经验收；扩大到生产节点前仍需完成五节点真实灰度。
 
 部署脚本 `v0.1.1` 及以后版本能识别早期修复脚本生成的完整
@@ -63,7 +63,7 @@ sudo ./migrate-to-rmomo-v2bx.sh check
 灰度时分别固定核心版本和部署脚本版本，不使用漂移的分支名：
 
 ```bash
-sudo env V2BX_SCRIPT_REF=v0.1.3 ./migrate-to-rmomo-v2bx.sh apply --version v0.1.1
+sudo env V2BX_SCRIPT_REF=v0.1.4 ./migrate-to-rmomo-v2bx.sh apply --version v0.1.1
 ```
 
 迁移会在旧服务仍运行时完成下载、核心归档摘要、组件摘要、shell 语法、配置和

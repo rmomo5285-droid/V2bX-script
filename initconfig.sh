@@ -289,7 +289,7 @@ generate_config_file() {
         \"Type\": \"xray\",
         \"Log\": {
             \"Level\": \"warning\",
-            \"AccessPath\": \"\",
+            \"AccessPath\": \"none\",
             \"ErrorPath\": \"/var/log/V2bX/xray-error.log\"
         },
         \"OutboundConfigPath\": \"/etc/V2bX/custom_outbound.json\",

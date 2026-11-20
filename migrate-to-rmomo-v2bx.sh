@@ -11,7 +11,7 @@ skip_resource_guard=1
 
 core_repo="${V2BX_CORE_REPO:-rmomo5285-droid/V2bX}"
 script_repo="${V2BX_SCRIPT_REPO:-rmomo5285-droid/V2bX-script}"
-script_ref="${V2BX_SCRIPT_REF:-v0.1.3}"
+script_ref="${V2BX_SCRIPT_REF:-v0.1.4}"
 root_dir="${V2BX_MIGRATE_ROOT:-/}"
 service_name="${V2BX_SERVICE_NAME:-V2bX}"
 
@@ -491,8 +491,11 @@ prepare_config() {
       | .Cores |= map(
           .Type as $core_type
           | .Log = ((.Log // {}) |
-              if $core_type == "xray" and ((.ErrorPath // "") | length) == 0 then
-                .ErrorPath = "/var/log/V2bX/xray-error.log"
+              if $core_type == "xray" then
+                (if .AccessPath == null or .AccessPath == "" then .AccessPath = "none" else . end)
+                | (if ((.ErrorPath // "") | length) == 0 then
+                    .ErrorPath = "/var/log/V2bX/xray-error.log"
+                  else . end)
               elif $core_type == "sing" and ((.Output // "") | length) == 0 then
                 .Output = "/var/log/V2bX/sing.log"
               elif $core_type == "hysteria2" and ((.Output // "") | length) == 0 then
